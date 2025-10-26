@@ -1,0 +1,21 @@
+# Copy this file to .dev.vars and fill in your actual values
+# These are secrets that should never be committed to git
+
+# OpenPhone API key (get from OpenPhone dashboard)
+OPENPHONE_API_KEY=your_openphone_api_key_here
+
+# Notion integration token (get from Notion integrations page)
+NOTION_API_KEY=your_notion_integration_token_here
+
+# Notion database IDs (extracted from Notion database URLs)
+# Format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+NOTION_CALLS_DATABASE_ID=your_calls_database_id_here
+NOTION_MESSAGES_DATABASE_ID=your_messages_database_id_here
+
+# Optional: Alert webhook URL (Slack, Discord, etc.)
+ALERT_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+# Optional: Webhook signature secret for validation
+WEBHOOK_SECRET=your_webhook_secret_here
+
+# Optional: Alert webhook URL (Slack, Discord, etc.)
+ALERT_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL

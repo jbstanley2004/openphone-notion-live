@@ -1,0 +1,87 @@
+{
+  "name": "openphone-notion-sync",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-03-07",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+
+  // Environment variables (non-sensitive)
+  "vars": {
+    "OPENPHONE_API_BASE": "https://api.openphone.com/v1",
+    "LOG_LEVEL": "info",
+    "WEBHOOK_PATH": "/webhooks/openphone"
+  },
+
+  // R2 bucket for storing call recordings
+  "r2_buckets": [
+    {
+      "binding": "RECORDINGS_BUCKET",
+      "bucket_name": "openphone-recordings",
+      "preview_bucket_name": "openphone-recordings-dev"
+    }
+  ],
+
+  // KV namespaces for state management
+  "kv_namespaces": [
+    {
+      "binding": "SYNC_STATE",
+      "id": "efb60e5bf6a848b9abb9e4cef4fe1540",
+      "preview_id": "d363298bccf245ca84708e42273d7e66"
+    },
+    {
+      "binding": "RATE_LIMITS",
+      "id": "3e1d50017a4440e7bb11c9622ed55903",
+      "preview_id": "a9f4b0d06c5346df9e998f22e884517d"
+    },
+    {
+      "binding": "CACHE",
+      "id": "30047d365c3c40ed85ce8b67fdde690f",
+      "preview_id": "8d900aca21444ccbb7a53fed9c3e2818"
+    }
+  ],
+
+  // Queues for reliable event processing
+  "queues": {
+    "producers": [
+      {
+        "binding": "WEBHOOK_EVENTS",
+        "queue": "openphone-webhook-events"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "openphone-webhook-events",
+        "max_batch_size": 10,
+        "max_batch_timeout": 30,
+        "max_retries": 3,
+        "dead_letter_queue": "openphone-webhook-events-dlq"
+      }
+    ]
+  },
+
+  // Analytics Engine for monitoring
+  "analytics_engine_datasets": [
+    {
+      "binding": "ANALYTICS",
+      "dataset": "openphone_sync_events"
+    }
+  ],
+
+  // Cron triggers for scheduled tasks
+  "triggers": {
+    "crons": [
+      "*/15 * * * *"  // Run every 15 minutes for backfill/cleanup
+    ]
+  },
+
+  // Route configuration (update with your domain)
+  // "routes": [
+  //   {
+  //     "pattern": "openphone-sync.yourdomain.com/*",
+  //     "custom_domain": true
+  //   }
+  // ]
+}
