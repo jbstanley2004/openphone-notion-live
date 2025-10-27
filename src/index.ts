@@ -59,6 +59,22 @@ export default {
         });
       }
 
+      // Debug database structure endpoint
+      if (url.pathname === '/debug/schema' && request.method === 'GET') {
+        const { NotionClient } = await import('./utils/notion-client');
+        const notionClient = new NotionClient(env, logger);
+
+        const debugInfo = await notionClient.getDebugInfo();
+        const result = {
+          timestamp: new Date().toISOString(),
+          ...debugInfo,
+        };
+
+        return new Response(JSON.stringify(result, null, 2), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
       // Webhook endpoint
       if (url.pathname === env.WEBHOOK_PATH && request.method === 'POST') {
         return await handleWebhook(request, env, logger);

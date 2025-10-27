@@ -540,13 +540,29 @@ export class NotionClient {
     this.logger.info('Searching for Canvas by phone', { original: phoneNumber });
 
     try {
-      // Try multiple phone number formats to find a match
+      // Format phone number to match Canvas format: XXX-XXX-XXXX
+      // OpenPhone sends: +13214436893
+      // Canvas stores: 321-443-6893
+      const digitsOnly = phoneNumber.replace(/\D/g, '');
+
+      // Remove leading 1 if present (US country code)
+      const withoutCountryCode = digitsOnly.startsWith('1') && digitsOnly.length === 11
+        ? digitsOnly.substring(1)
+        : digitsOnly;
+
+      // Format as XXX-XXX-XXXX if we have 10 digits
+      let formattedPhone = '';
+      if (withoutCountryCode.length === 10) {
+        formattedPhone = `${withoutCountryCode.substring(0, 3)}-${withoutCountryCode.substring(3, 6)}-${withoutCountryCode.substring(6)}`;
+      }
+
+      // Try multiple phone number formats
       const formats = [
-        phoneNumber, // Original format (e.g., +15551234567)
-        phoneNumber.replace(/^\+1/, ''), // Without +1 (e.g., 5551234567)
-        phoneNumber.replace(/\D/g, ''), // Digits only (e.g., 15551234567)
-        phoneNumber.replace(/^\+1/, '').replace(/\D/g, ''), // Without +1, digits only (e.g., 5551234567)
-      ];
+        formattedPhone,              // 321-443-6893 (Canvas format)
+        withoutCountryCode,          // 3214436893
+        phoneNumber,                 // +13214436893 (original)
+        phoneNumber.replace(/^\+1/, ''), // 3214436893
+      ].filter(f => f); // Remove empty strings
 
       // Remove duplicates
       const uniqueFormats = [...new Set(formats)];
@@ -555,42 +571,7 @@ export class NotionClient {
       for (const format of uniqueFormats) {
         this.logger.info('Trying phone format', { format });
 
-        // Try rich_text field type (contains match) - most common
-        try {
-          const textResponse = await this.client.databases.query({
-            database_id: this.canvasDatabaseId,
-            filter: {
-              property: 'Phone',
-              rich_text: {
-                contains: format,
-              },
-            },
-          });
-
-          this.logger.info('Rich text query completed', {
-            format,
-            resultsCount: textResponse.results.length
-          });
-
-          if (textResponse.results.length > 0) {
-            const canvasId = textResponse.results[0].id;
-            this.logger.info('Found Canvas record (rich_text field)', {
-              phoneNumber,
-              format,
-              canvasId,
-              totalResults: textResponse.results.length
-            });
-            return canvasId;
-          }
-        } catch (textError) {
-          this.logger.error('Rich text search failed for format', {
-            format,
-            error: String(textError),
-            stack: textError instanceof Error ? textError.stack : undefined
-          });
-        }
-
-        // Try phone_number field type (exact match)
+        // Try phone_number field type (exact match) - PRIMARY method for Canvas
         try {
           const phoneResponse = await this.client.databases.query({
             database_id: this.canvasDatabaseId,
@@ -622,6 +603,41 @@ export class NotionClient {
             format,
             error: String(phoneError),
             stack: phoneError instanceof Error ? phoneError.stack : undefined
+          });
+        }
+
+        // Try rich_text field type as fallback (contains match)
+        try {
+          const textResponse = await this.client.databases.query({
+            database_id: this.canvasDatabaseId,
+            filter: {
+              property: 'Phone',
+              rich_text: {
+                contains: format,
+              },
+            },
+          });
+
+          this.logger.info('Rich text query completed', {
+            format,
+            resultsCount: textResponse.results.length
+          });
+
+          if (textResponse.results.length > 0) {
+            const canvasId = textResponse.results[0].id;
+            this.logger.info('Found Canvas record (rich_text field)', {
+              phoneNumber,
+              format,
+              canvasId,
+              totalResults: textResponse.results.length
+            });
+            return canvasId;
+          }
+        } catch (textError) {
+          this.logger.error('Rich text search failed for format', {
+            format,
+            error: String(textError),
+            stack: textError instanceof Error ? textError.stack : undefined
           });
         }
       }
@@ -685,5 +701,88 @@ export class NotionClient {
       });
       return null;
     }
+  }
+
+  // ========================================================================
+  // Debug / Schema Inspection
+  // ========================================================================
+
+  /**
+   * Get database schema and sample records for debugging
+   */
+  async getDebugInfo(): Promise<any> {
+    const result: any = {};
+
+    try {
+      // Get Canvas schema
+      const canvasDb = await this.client.databases.retrieve({
+        database_id: this.canvasDatabaseId,
+      });
+
+      this.logger.info('Canvas database retrieved', { canvasDb: JSON.stringify(canvasDb).substring(0, 500) });
+
+      result.canvas = {
+        raw: canvasDb,
+        properties: canvasDb.properties ? Object.entries(canvasDb.properties).map(([name, prop]) => ({
+          name,
+          type: (prop as any).type,
+        })) : [],
+        sampleRecords: [],
+      };
+
+      // Get sample Canvas records
+      const canvasRecords = await this.client.databases.query({
+        database_id: this.canvasDatabaseId,
+        page_size: 3,
+      });
+
+      result.canvas.sampleRecords = canvasRecords.results.map((page: any) => {
+        const props = page.properties;
+        const title = Object.values(props).find((p: any) => p.type === 'title');
+        const titleText = title && 'title' in title ? title.title.map((t: any) => t.plain_text).join('') : '';
+
+        let phoneValue = null;
+        let phoneType = null;
+        if (props.Phone) {
+          phoneType = props.Phone.type;
+          if (props.Phone.type === 'phone_number') {
+            phoneValue = props.Phone.phone_number;
+          } else if (props.Phone.type === 'rich_text') {
+            phoneValue = props.Phone.rich_text.map((t: any) => t.plain_text).join('');
+          }
+        }
+
+        return {
+          id: page.id,
+          title: titleText,
+          phoneType,
+          phoneValue,
+        };
+      });
+
+      // Get recent Calls records
+      const callsRecords = await this.client.databases.query({
+        database_id: this.callsDatabaseId,
+        page_size: 3,
+        sorts: [{ timestamp: 'created_time', direction: 'descending' }],
+      });
+
+      result.recentCalls = callsRecords.results.map((page: any) => {
+        const props = page.properties;
+        return {
+          id: page.id,
+          callId: props['Call ID']?.title?.[0]?.plain_text,
+          direction: props.Direction?.select?.name,
+          participants: props.Participants?.rich_text?.map((t: any) => t.plain_text).join(''),
+          canvasRelationCount: props.Canvas?.relation?.length || 0,
+          canvasIds: props.Canvas?.relation?.map((r: any) => r.id) || [],
+        };
+      });
+    } catch (error) {
+      result.error = String(error);
+      result.errorStack = error instanceof Error ? error.stack : undefined;
+    }
+
+    return result;
   }
 }

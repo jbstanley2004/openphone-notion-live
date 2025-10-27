@@ -83,12 +83,18 @@ export class NotionFetchClient {
 
   // Databases API (now uses data sources in 2025-09-03)
   databases = {
-    query: async (params: { database_id: string; filter?: any }) => {
+    retrieve: async (params: { database_id: string }) => {
+      return this.request('GET', `/databases/${params.database_id}`);
+    },
+
+    query: async (params: { database_id: string; filter?: any; sorts?: any; page_size?: number }) => {
       // Convert database_id to data_source_id and use data source API
       const dataSourceId = await this.getDataSourceId(params.database_id);
-      return this.request('POST', `/data_sources/${dataSourceId}/query`, {
-        filter: params.filter,
-      });
+      const body: any = {};
+      if (params.filter) body.filter = params.filter;
+      if (params.sorts) body.sorts = params.sorts;
+      if (params.page_size) body.page_size = params.page_size;
+      return this.request('POST', `/data_sources/${dataSourceId}/query`, body);
     },
   };
 }
