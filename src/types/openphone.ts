@@ -148,6 +148,33 @@ export interface MessageMedia {
 }
 
 // ============================================================================
+// Mail Types
+// ============================================================================
+
+export interface Mail {
+  id: string;
+  object: 'mail';
+  from: string; // Email address
+  to: string[]; // Email addresses
+  cc?: string[]; // Email addresses
+  bcc?: string[]; // Email addresses
+  subject: string;
+  body: string; // Email body (plain text or HTML)
+  direction: 'incoming' | 'outgoing';
+  status: 'queued' | 'sent' | 'delivered' | 'failed' | 'bounced';
+  createdAt: ISO8601DateTime;
+  updatedAt: ISO8601DateTime;
+  attachments?: MailAttachment[];
+}
+
+export interface MailAttachment {
+  filename: string;
+  contentType: string;
+  size: number;
+  url: string;
+}
+
+// ============================================================================
 // Contact Types
 // ============================================================================
 

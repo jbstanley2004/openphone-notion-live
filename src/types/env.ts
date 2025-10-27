@@ -18,6 +18,7 @@ export interface Env {
   NOTION_CALLS_DATABASE_ID: string;
   NOTION_MESSAGES_DATABASE_ID: string;
   NOTION_CANVAS_DATABASE_ID: string;
+  NOTION_MAIL_DATABASE_ID: string;
   WEBHOOK_SECRET?: string; // Optional webhook signature validation
   ALERT_WEBHOOK_URL?: string; // Optional alert webhook (Slack, Discord, etc.)
 
