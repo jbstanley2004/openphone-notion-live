@@ -43,7 +43,7 @@ Cloudflare R2 (Recordings) + Notion API
 2. **Notion Account**
    - Notion workspace
    - Integration created with permissions
-   - Two databases created (Calls and Messages)
+   - Three databases required: Calls, Messages, and Canvas
 
 3. **Cloudflare Account**
    - Workers paid plan ($5/month minimum)
@@ -111,8 +111,8 @@ wrangler queues create openphone-webhook-events-dlq
 
 Follow the detailed instructions in [docs/notion-database-schema.md](./docs/notion-database-schema.md) to:
 
-1. Create two Notion databases (Calls and Messages)
-2. Add all required properties
+1. Create three Notion databases: Calls, Messages, and Canvas
+2. Add all required properties (including Canvas relations)
 3. Share databases with your Notion integration
 4. Copy the database IDs
 
@@ -131,6 +131,7 @@ OPENPHONE_API_KEY=your_openphone_api_key
 NOTION_API_KEY=your_notion_integration_token
 NOTION_CALLS_DATABASE_ID=your_calls_database_id
 NOTION_MESSAGES_DATABASE_ID=your_messages_database_id
+NOTION_CANVAS_DATABASE_ID=data-source-95
 WEBHOOK_SECRET=optional_webhook_signature_secret
 ALERT_WEBHOOK_URL=optional_slack_webhook_url
 ```
@@ -142,6 +143,7 @@ wrangler secret put OPENPHONE_API_KEY
 wrangler secret put NOTION_API_KEY
 wrangler secret put NOTION_CALLS_DATABASE_ID
 wrangler secret put NOTION_MESSAGES_DATABASE_ID
+wrangler secret put NOTION_CANVAS_DATABASE_ID
 # Optional:
 wrangler secret put WEBHOOK_SECRET
 wrangler secret put ALERT_WEBHOOK_URL

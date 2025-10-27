@@ -22,6 +22,7 @@ import {
   createCheckbox,
   createUrl,
   createPhoneNumber,
+  createRelation,
 } from '../types/notion';
 import { Logger } from './logger';
 
@@ -29,12 +30,14 @@ export class NotionClient {
   private client: NotionFetchClient;
   private callsDatabaseId: string;
   private messagesDatabaseId: string;
+  private canvasDatabaseId: string;
   private logger: Logger;
 
   constructor(env: Env, logger: Logger) {
     const notionApiKey = env.NOTION_API_KEY?.trim();
     const callsDatabaseId = env.NOTION_CALLS_DATABASE_ID?.trim();
     const messagesDatabaseId = env.NOTION_MESSAGES_DATABASE_ID?.trim();
+    const canvasDatabaseId = env.NOTION_CANVAS_DATABASE_ID?.trim();
 
     if (!notionApiKey) {
       throw new Error('NOTION_API_KEY is missing or empty');
@@ -48,9 +51,14 @@ export class NotionClient {
       throw new Error('NOTION_MESSAGES_DATABASE_ID is missing or empty');
     }
 
+    if (!canvasDatabaseId) {
+      throw new Error('NOTION_CANVAS_DATABASE_ID is missing or empty');
+    }
+
     this.client = new NotionFetchClient(notionApiKey);
     this.callsDatabaseId = callsDatabaseId;
     this.messagesDatabaseId = messagesDatabaseId;
+    this.canvasDatabaseId = canvasDatabaseId;
     this.logger = logger;
   }
 
@@ -73,6 +81,23 @@ export class NotionClient {
     const { call, recordings, transcript, summary, voicemail, recordingUrl, voicemailUrl } = data;
 
     this.logger.info('Creating call page in Notion', { callId: call.id });
+
+    // Find Canvas relation by phone number
+    // Look for the "other" participant (not the user's OpenPhone number)
+    let canvasId: string | null = null;
+
+    // Try to find the other participant's phone number
+    // Typically, if there are 2 participants, one is the user's number
+    if (call.participants.length >= 2) {
+      // Find the participant that's not the phoneNumberId (user's number)
+      const otherParticipant = call.participants.find(p => p !== call.phoneNumberId);
+      if (otherParticipant) {
+        canvasId = await this.findCanvasByPhone(otherParticipant);
+      }
+    } else if (call.participants.length === 1) {
+      // If only one participant, use that
+      canvasId = await this.findCanvasByPhone(call.participants[0]);
+    }
 
     // Format transcript dialogue
     const transcriptText = transcript?.dialogue
@@ -146,6 +171,9 @@ export class NotionClient {
           2
         )
       ),
+
+      // Canvas Relation
+      Canvas: createRelation(canvasId ? [canvasId] : []),
 
       // Sync tracking
       'Synced At': createDate(new Date().toISOString()),
@@ -256,6 +284,19 @@ export class NotionClient {
   async createMessagePage(message: Message): Promise<string> {
     this.logger.info('Creating message page in Notion', { messageId: message.id });
 
+    // Find Canvas relation by phone number
+    // For incoming messages, use the "from" number
+    // For outgoing messages, use the "to" number
+    let canvasId: string | null = null;
+
+    const phoneToLookup = message.direction === 'incoming'
+      ? message.from
+      : (message.to[0] || null);
+
+    if (phoneToLookup) {
+      canvasId = await this.findCanvasByPhone(phoneToLookup);
+    }
+
     const properties = {
       'Message ID': createTitle(message.id),
       Direction: createSelect(message.direction),
@@ -273,6 +314,7 @@ export class NotionClient {
         message.media?.map((m) => m.url).join('\n') || ''
       ),
       'Conversation ID': createRichText(''), // Could be extracted from related calls/messages
+      Canvas: createRelation(canvasId ? [canvasId] : []),
       'Raw Data': createRichText(JSON.stringify(message, null, 2)),
       'Synced At': createDate(new Date().toISOString()),
     };
@@ -368,5 +410,86 @@ export class NotionClient {
    */
   async messagePageExists(messageId: string): Promise<string | null> {
     return this.findPageByResourceId(this.messagesDatabaseId, messageId, 'Message ID');
+  }
+
+  // ========================================================================
+  // Canvas Database Operations
+  // ========================================================================
+
+  /**
+   * Find a Canvas page by phone number
+   * Cleans the phone number (removes +1, spaces, etc.) before searching
+   */
+  async findCanvasByPhone(phoneNumber: string): Promise<string | null> {
+    // Clean phone number (remove +1, spaces, dashes, parentheses)
+    const cleanPhone = phoneNumber.replace(/^\+1/, '').replace(/\D/g, '');
+
+    this.logger.info('Searching for Canvas by phone', {
+      original: phoneNumber,
+      cleaned: cleanPhone
+    });
+
+    try {
+      const response = await this.client.databases.query({
+        database_id: this.canvasDatabaseId,
+        filter: {
+          property: 'Phone',
+          rich_text: {
+            contains: cleanPhone,
+          },
+        },
+      });
+
+      if (response.results.length > 0) {
+        const canvasId = response.results[0].id;
+        this.logger.info('Found Canvas record', {
+          phoneNumber,
+          canvasId
+        });
+        return canvasId;
+      }
+
+      this.logger.info('No Canvas record found for phone', { phoneNumber });
+      return null;
+    } catch (error) {
+      this.logger.error('Error finding Canvas by phone', error);
+      return null;
+    }
+  }
+
+  /**
+   * Find a Canvas page by email address
+   */
+  async findCanvasByEmail(email: string): Promise<string | null> {
+    const normalizedEmail = email.toLowerCase().trim();
+
+    this.logger.info('Searching for Canvas by email', { email: normalizedEmail });
+
+    try {
+      const response = await this.client.databases.query({
+        database_id: this.canvasDatabaseId,
+        filter: {
+          property: 'Email',
+          email: {
+            equals: normalizedEmail,
+          },
+        },
+      });
+
+      if (response.results.length > 0) {
+        const canvasId = response.results[0].id;
+        this.logger.info('Found Canvas record', {
+          email: normalizedEmail,
+          canvasId
+        });
+        return canvasId;
+      }
+
+      this.logger.info('No Canvas record found for email', { email: normalizedEmail });
+      return null;
+    } catch (error) {
+      this.logger.error('Error finding Canvas by email', error);
+      return null;
+    }
   }
 }

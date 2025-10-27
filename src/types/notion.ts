@@ -22,7 +22,8 @@ export type NotionProperty =
   | UrlProperty
   | PhoneNumberProperty
   | EmailProperty
-  | FilesProperty;
+  | FilesProperty
+  | RelationProperty;
 
 export interface TitleProperty {
   title: Array<{
@@ -86,6 +87,12 @@ export interface FilesProperty {
     external: {
       url: string;
     };
+  }>;
+}
+
+export interface RelationProperty {
+  relation: Array<{
+    id: string;
   }>;
 }
 
@@ -304,5 +311,11 @@ export function createFiles(
         url: file.url,
       },
     })),
+  };
+}
+
+export function createRelation(pageIds: string[]): RelationProperty {
+  return {
+    relation: pageIds.map((id) => ({ id })),
   };
 }
