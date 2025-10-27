@@ -85,11 +85,18 @@
     "bindings": [
       {
         "name": "PHONE_SYNC",
-        "class_name": "PhoneNumberSync",
-        "script_name": "openphone-notion-sync"
+        "class_name": "PhoneNumberSync"
       }
     ]
   },
+
+  // Durable Objects migrations
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_classes": ["PhoneNumberSync"]
+    }
+  ],
 
   // Cron triggers for scheduled tasks
   "triggers": {
