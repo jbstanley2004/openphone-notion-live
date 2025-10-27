@@ -13,7 +13,7 @@ fi
 
 # Set Canvas Database ID (required)
 echo "📊 Setting NOTION_CANVAS_DATABASE_ID..."
-echo "data-source-95" | npx wrangler secret put NOTION_CANVAS_DATABASE_ID
+echo "fc0e485b6570460e995b94431b08f0a7" | npx wrangler secret put NOTION_CANVAS_DATABASE_ID
 
 echo ""
 echo "✅ Canvas database ID configured successfully!"

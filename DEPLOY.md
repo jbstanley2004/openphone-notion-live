@@ -15,7 +15,7 @@ The Canvas database ID and other Notion database IDs must be set as Cloudflare s
 
 ```bash
 # Set Canvas database ID (REQUIRED)
-echo "data-source-95" | npx wrangler secret put NOTION_CANVAS_DATABASE_ID
+echo "fc0e485b6570460e995b94431b08f0a7" | npx wrangler secret put NOTION_CANVAS_DATABASE_ID
 
 # Set other required Notion database IDs
 npx wrangler secret put NOTION_CALLS_DATABASE_ID
@@ -36,19 +36,19 @@ npx wrangler secret put OPENPHONE_API_KEY
 
 Make sure your Notion databases have the Canvas relation property:
 
-### In Calls Database (data-source-29):
+### In Calls Database:
 1. Open the database in Notion
 2. Add a new property called `Canvas`
 3. Type: **Relation**
-4. Link to: Canvas database (data-source-95)
+4. Link to: Canvas database (fc0e485b6570460e995b94431b08f0a7)
 
-### In Messages Database (data-source-120):
+### In Messages Database:
 1. Open the database in Notion
-2. Add a new property called `Canvas`  
+2. Add a new property called `Canvas`
 3. Type: **Relation**
-4. Link to: Canvas database (data-source-95)
+4. Link to: Canvas database (fc0e485b6570460e995b94431b08f0a7)
 
-### In Canvas Database (data-source-95):
+### In Canvas Database (fc0e485b6570460e995b94431b08f0a7):
 Ensure it has:
 - `Phone` property (Rich Text or Phone Number type)
 - `Email` property (Email type)
@@ -85,12 +85,12 @@ npm run tail
 
 The Canvas database ID secret wasn't set properly. Run:
 ```bash
-echo "data-source-95" | npx wrangler secret put NOTION_CANVAS_DATABASE_ID
+echo "fc0e485b6570460e995b94431b08f0a7" | npx wrangler secret put NOTION_CANVAS_DATABASE_ID
 ```
 
 ### Canvas relations not working
 
-1. Verify the Canvas database ID in Notion matches `data-source-95`
+1. Verify the Canvas database ID in Notion matches `fc0e485b6570460e995b94431b08f0a7`
 2. Check that the Phone property exists in Canvas database
 3. Ensure phone numbers are stored in the correct format
 4. Check worker logs: `npm run tail`
@@ -104,9 +104,9 @@ npx wrangler login
 
 ## Database IDs Reference
 
-- **Canvas**: `data-source-95`
-- **OpenPhone Calls**: `data-source-29`
-- **OpenPhone Messages**: `data-source-120`
+- **Canvas**: `fc0e485b6570460e995b94431b08f0a7`
+- **OpenPhone Calls**: Your calls database ID
+- **OpenPhone Messages**: Your messages database ID
 - **Your OpenPhone Number**: `+13365185544`
 
 ## How It Works
