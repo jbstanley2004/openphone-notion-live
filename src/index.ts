@@ -34,6 +34,31 @@ export default {
         });
       }
 
+      // Debug Canvas lookup endpoint
+      if (url.pathname === '/debug/canvas' && request.method === 'POST') {
+        const { NotionClient } = await import('./utils/notion-client');
+        const notionClient = new NotionClient(env, logger);
+
+        const body = await request.json() as { phone?: string; email?: string };
+        const result: any = { timestamp: new Date().toISOString() };
+
+        if (body.phone) {
+          logger.info('Testing Canvas lookup by phone', { phone: body.phone });
+          result.phone = body.phone;
+          result.canvasId = await notionClient.findCanvasByPhone(body.phone);
+        }
+
+        if (body.email) {
+          logger.info('Testing Canvas lookup by email', { email: body.email });
+          result.email = body.email;
+          result.canvasIdByEmail = await notionClient.findCanvasByEmail(body.email);
+        }
+
+        return new Response(JSON.stringify(result, null, 2), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
       // Webhook endpoint
       if (url.pathname === env.WEBHOOK_PATH && request.method === 'POST') {
         return await handleWebhook(request, env, logger);
