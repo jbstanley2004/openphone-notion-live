@@ -550,36 +550,12 @@ export class NotionClient {
 
       // Remove duplicates
       const uniqueFormats = [...new Set(formats)];
+      this.logger.info('Trying phone formats', { formats: uniqueFormats });
 
       for (const format of uniqueFormats) {
-        this.logger.debug('Trying phone format', { format });
+        this.logger.info('Trying phone format', { format });
 
-        // Try phone_number field type first (exact match)
-        try {
-          const phoneResponse = await this.client.databases.query({
-            database_id: this.canvasDatabaseId,
-            filter: {
-              property: 'Phone',
-              phone_number: {
-                equals: format,
-              },
-            },
-          });
-
-          if (phoneResponse.results.length > 0) {
-            const canvasId = phoneResponse.results[0].id;
-            this.logger.info('Found Canvas record (phone_number field)', {
-              phoneNumber,
-              format,
-              canvasId
-            });
-            return canvasId;
-          }
-        } catch (phoneError) {
-          this.logger.debug('Phone field is not phone_number type, trying rich_text');
-        }
-
-        // Try rich_text field type (contains match)
+        // Try rich_text field type (contains match) - most common
         try {
           const textResponse = await this.client.databases.query({
             database_id: this.canvasDatabaseId,
@@ -591,24 +567,76 @@ export class NotionClient {
             },
           });
 
+          this.logger.info('Rich text query completed', {
+            format,
+            resultsCount: textResponse.results.length
+          });
+
           if (textResponse.results.length > 0) {
             const canvasId = textResponse.results[0].id;
             this.logger.info('Found Canvas record (rich_text field)', {
               phoneNumber,
               format,
-              canvasId
+              canvasId,
+              totalResults: textResponse.results.length
             });
             return canvasId;
           }
         } catch (textError) {
-          this.logger.debug('Rich text search failed for format', { format });
+          this.logger.error('Rich text search failed for format', {
+            format,
+            error: String(textError),
+            stack: textError instanceof Error ? textError.stack : undefined
+          });
+        }
+
+        // Try phone_number field type (exact match)
+        try {
+          const phoneResponse = await this.client.databases.query({
+            database_id: this.canvasDatabaseId,
+            filter: {
+              property: 'Phone',
+              phone_number: {
+                equals: format,
+              },
+            },
+          });
+
+          this.logger.info('Phone number query completed', {
+            format,
+            resultsCount: phoneResponse.results.length
+          });
+
+          if (phoneResponse.results.length > 0) {
+            const canvasId = phoneResponse.results[0].id;
+            this.logger.info('Found Canvas record (phone_number field)', {
+              phoneNumber,
+              format,
+              canvasId,
+              totalResults: phoneResponse.results.length
+            });
+            return canvasId;
+          }
+        } catch (phoneError) {
+          this.logger.error('Phone field search failed', {
+            format,
+            error: String(phoneError),
+            stack: phoneError instanceof Error ? phoneError.stack : undefined
+          });
         }
       }
 
-      this.logger.info('No Canvas record found for phone', { phoneNumber });
+      this.logger.warn('No Canvas record found for phone after trying all formats', {
+        phoneNumber,
+        formatsAttempted: uniqueFormats.length
+      });
       return null;
     } catch (error) {
-      this.logger.error('Error finding Canvas by phone', error);
+      this.logger.error('Fatal error finding Canvas by phone', {
+        phoneNumber,
+        error: String(error),
+        stack: error instanceof Error ? error.stack : undefined
+      });
       return null;
     }
   }
@@ -632,19 +660,29 @@ export class NotionClient {
         },
       });
 
+      this.logger.info('Email query completed', {
+        email: normalizedEmail,
+        resultsCount: response.results.length
+      });
+
       if (response.results.length > 0) {
         const canvasId = response.results[0].id;
-        this.logger.info('Found Canvas record', {
+        this.logger.info('Found Canvas record by email', {
           email: normalizedEmail,
-          canvasId
+          canvasId,
+          totalResults: response.results.length
         });
         return canvasId;
       }
 
-      this.logger.info('No Canvas record found for email', { email: normalizedEmail });
+      this.logger.warn('No Canvas record found for email', { email: normalizedEmail });
       return null;
     } catch (error) {
-      this.logger.error('Error finding Canvas by email', error);
+      this.logger.error('Error finding Canvas by email', {
+        email: normalizedEmail,
+        error: String(error),
+        stack: error instanceof Error ? error.stack : undefined
+      });
       return null;
     }
   }
