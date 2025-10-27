@@ -55,7 +55,7 @@ async function backfillRecentCalls(env: Env, logger: Logger): Promise<void> {
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const calls = await openPhoneClient.listCalls({
       createdAfter: oneDayAgo,
-      limit: 100,
+      maxResults: 100,
     });
 
     logger.info('Found calls for backfill', { count: calls.length });
@@ -170,7 +170,7 @@ async function backfillRecentMessages(env: Env, logger: Logger): Promise<void> {
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const messages = await openPhoneClient.listMessages({
       createdAfter: oneDayAgo,
-      limit: 100,
+      maxResults: 100,
     });
 
     logger.info('Found messages for backfill', { count: messages.length });
@@ -239,7 +239,7 @@ async function updatePendingCallData(env: Env, logger: Logger): Promise<void> {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     const calls = await openPhoneClient.listCalls({
       createdAfter: sevenDaysAgo,
-      limit: 50, // Limit to avoid too much work
+      maxResults: 50, // Limit to avoid too much work
     });
 
     let updated = 0;

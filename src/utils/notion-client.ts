@@ -91,21 +91,33 @@ export class NotionClient {
 
     this.logger.info('Creating call page in Notion', { callId: call.id });
 
-    // Find Canvas relation by phone number
-    // Look for the "other" participant (not the user's OpenPhone number)
+    // Find Canvas relation by phone number based on call direction
+    // For incoming calls: link to the caller (person calling me)
+    // For outgoing calls: link to the recipient (merchant I'm calling)
     let canvasId: string | null = null;
 
-    // Try to find the other participant's phone number
-    // Typically, if there are 2 participants, one is the user's number
-    if (call.participants.length >= 2) {
-      // Find the participant that's not the phoneNumberId (user's number)
-      const otherParticipant = call.participants.find(p => p !== call.phoneNumberId);
-      if (otherParticipant) {
-        canvasId = await this.findCanvasByPhone(otherParticipant);
+    if (call.direction === 'incoming') {
+      // For incoming calls, find the caller's number
+      // Try each participant until we find a matching Canvas entry
+      // This handles cases where participants includes both caller and our number
+      for (const participant of call.participants) {
+        const foundCanvas = await this.findCanvasByPhone(participant);
+        if (foundCanvas) {
+          canvasId = foundCanvas;
+          break;
+        }
       }
-    } else if (call.participants.length === 1) {
-      // If only one participant, use that
-      canvasId = await this.findCanvasByPhone(call.participants[0]);
+    } else if (call.direction === 'outgoing') {
+      // For outgoing calls, find the recipient's (merchant's) number
+      // Try each participant until we find a matching Canvas entry
+      // This ensures we link to the merchant being called
+      for (const participant of call.participants) {
+        const foundCanvas = await this.findCanvasByPhone(participant);
+        if (foundCanvas) {
+          canvasId = foundCanvas;
+          break;
+        }
+      }
     }
 
     // Format transcript dialogue

@@ -272,8 +272,8 @@ export interface OpenPhoneAPIResponse<T> {
 
 export interface OpenPhoneAPIListResponse<T> {
   data: T[];
-  hasMore?: boolean;
-  nextCursor?: string;
+  totalItems?: number; // OpenPhone provides total count
+  nextPageToken?: string; // OpenPhone uses nextPageToken for pagination
 }
 
 export interface OpenPhoneAPIError {
@@ -298,8 +298,8 @@ export interface OpenPhoneAPIError {
 // ============================================================================
 
 export interface PaginationParams {
-  limit?: number;
-  cursor?: string;
+  maxResults?: number; // OpenPhone uses maxResults instead of limit
+  pageToken?: string; // OpenPhone uses pageToken instead of cursor
 }
 
 // ============================================================================
