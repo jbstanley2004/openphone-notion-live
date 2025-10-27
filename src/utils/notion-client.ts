@@ -537,32 +537,72 @@ export class NotionClient {
    * Cleans the phone number (removes +1, spaces, etc.) before searching
    */
   async findCanvasByPhone(phoneNumber: string): Promise<string | null> {
-    // Clean phone number (remove +1, spaces, dashes, parentheses)
-    const cleanPhone = phoneNumber.replace(/^\+1/, '').replace(/\D/g, '');
-
-    this.logger.info('Searching for Canvas by phone', {
-      original: phoneNumber,
-      cleaned: cleanPhone
-    });
+    this.logger.info('Searching for Canvas by phone', { original: phoneNumber });
 
     try {
-      const response = await this.client.databases.query({
-        database_id: this.canvasDatabaseId,
-        filter: {
-          property: 'Phone',
-          rich_text: {
-            contains: cleanPhone,
-          },
-        },
-      });
+      // Try multiple phone number formats to find a match
+      const formats = [
+        phoneNumber, // Original format (e.g., +15551234567)
+        phoneNumber.replace(/^\+1/, ''), // Without +1 (e.g., 5551234567)
+        phoneNumber.replace(/\D/g, ''), // Digits only (e.g., 15551234567)
+        phoneNumber.replace(/^\+1/, '').replace(/\D/g, ''), // Without +1, digits only (e.g., 5551234567)
+      ];
 
-      if (response.results.length > 0) {
-        const canvasId = response.results[0].id;
-        this.logger.info('Found Canvas record', {
-          phoneNumber,
-          canvasId
-        });
-        return canvasId;
+      // Remove duplicates
+      const uniqueFormats = [...new Set(formats)];
+
+      for (const format of uniqueFormats) {
+        this.logger.debug('Trying phone format', { format });
+
+        // Try phone_number field type first (exact match)
+        try {
+          const phoneResponse = await this.client.databases.query({
+            database_id: this.canvasDatabaseId,
+            filter: {
+              property: 'Phone',
+              phone_number: {
+                equals: format,
+              },
+            },
+          });
+
+          if (phoneResponse.results.length > 0) {
+            const canvasId = phoneResponse.results[0].id;
+            this.logger.info('Found Canvas record (phone_number field)', {
+              phoneNumber,
+              format,
+              canvasId
+            });
+            return canvasId;
+          }
+        } catch (phoneError) {
+          this.logger.debug('Phone field is not phone_number type, trying rich_text');
+        }
+
+        // Try rich_text field type (contains match)
+        try {
+          const textResponse = await this.client.databases.query({
+            database_id: this.canvasDatabaseId,
+            filter: {
+              property: 'Phone',
+              rich_text: {
+                contains: format,
+              },
+            },
+          });
+
+          if (textResponse.results.length > 0) {
+            const canvasId = textResponse.results[0].id;
+            this.logger.info('Found Canvas record (rich_text field)', {
+              phoneNumber,
+              format,
+              canvasId
+            });
+            return canvasId;
+          }
+        } catch (textError) {
+          this.logger.debug('Rich text search failed for format', { format });
+        }
       }
 
       this.logger.info('No Canvas record found for phone', { phoneNumber });

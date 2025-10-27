@@ -64,19 +64,28 @@ async function backfillRecentCalls(env: Env, logger: Logger): Promise<void> {
 
     for (const phoneNumber of phoneNumbers) {
       try {
+        // Try listing calls without filters that may be causing issues
+        // Only use phoneNumberId which is confirmed required
         const calls = await openPhoneClient.listCalls({
           phoneNumberId: phoneNumber.id,
-          createdAfter: oneDayAgo,
           maxResults: 100,
+        });
+
+        // Filter calls by date in memory since API may not support date filters
+        const recentCalls = calls.filter(call => {
+          const callDate = new Date(call.createdAt);
+          const cutoffDate = new Date(oneDayAgo);
+          return callDate >= cutoffDate;
         });
 
         logger.info('Found calls for phone number', {
           phoneNumberId: phoneNumber.id,
           phoneNumber: phoneNumber.number,
-          count: calls.length
+          total: calls.length,
+          recent: recentCalls.length
         });
 
-        for (const call of calls) {
+        for (const call of recentCalls) {
       try {
         // Check if already synced
         const syncState = await getSyncState(env.SYNC_STATE, call.id);
@@ -200,17 +209,24 @@ async function backfillRecentMessages(env: Env, logger: Logger): Promise<void> {
       try {
         const messages = await openPhoneClient.listMessages({
           phoneNumberId: phoneNumber.id,
-          createdAfter: oneDayAgo,
           maxResults: 100,
+        });
+
+        // Filter messages by date in memory
+        const recentMessages = messages.filter(msg => {
+          const msgDate = new Date(msg.createdAt);
+          const cutoffDate = new Date(oneDayAgo);
+          return msgDate >= cutoffDate;
         });
 
         logger.info('Found messages for phone number', {
           phoneNumberId: phoneNumber.id,
           phoneNumber: phoneNumber.number,
-          count: messages.length
+          total: messages.length,
+          recent: recentMessages.length
         });
 
-        for (const message of messages) {
+        for (const message of recentMessages) {
       try {
         // Check if already synced
         const syncState = await getSyncState(env.SYNC_STATE, message.id);
@@ -286,17 +302,24 @@ async function updatePendingCallData(env: Env, logger: Logger): Promise<void> {
       try {
         const calls = await openPhoneClient.listCalls({
           phoneNumberId: phoneNumber.id,
-          createdAfter: sevenDaysAgo,
           maxResults: 50, // Limit to avoid too much work
+        });
+
+        // Filter calls by date in memory
+        const recentCalls = calls.filter(call => {
+          const callDate = new Date(call.createdAt);
+          const cutoffDate = new Date(sevenDaysAgo);
+          return callDate >= cutoffDate;
         });
 
         logger.info('Checking calls for phone number', {
           phoneNumberId: phoneNumber.id,
           phoneNumber: phoneNumber.number,
-          count: calls.length
+          total: calls.length,
+          recent: recentCalls.length
         });
 
-        for (const call of calls) {
+        for (const call of recentCalls) {
       try {
         // Only check completed calls that are synced
         if (call.status !== 'completed') {
