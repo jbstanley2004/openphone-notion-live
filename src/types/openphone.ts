@@ -309,6 +309,7 @@ export interface PaginationParams {
 export interface CallsListParams extends PaginationParams {
   phoneNumberId?: OpenPhoneID<'PN'>;
   userId?: OpenPhoneID<'US'>;
+  participants?: PhoneNumber[]; // Required by OpenPhone API
   direction?: 'incoming' | 'outgoing';
   createdAfter?: ISO8601DateTime;
   createdBefore?: ISO8601DateTime;
@@ -317,6 +318,7 @@ export interface CallsListParams extends PaginationParams {
 export interface MessagesListParams extends PaginationParams {
   phoneNumberId?: OpenPhoneID<'PN'>;
   userId?: OpenPhoneID<'US'>;
+  participants?: PhoneNumber[]; // Required by OpenPhone API
   direction?: 'incoming' | 'outgoing';
   createdAfter?: ISO8601DateTime;
   createdBefore?: ISO8601DateTime;

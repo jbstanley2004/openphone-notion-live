@@ -73,6 +73,7 @@ async function backfillRecentCalls(env: Env, logger: Logger): Promise<void> {
         do {
           const response = await openPhoneClient.listCalls({
             phoneNumberId: phoneNumber.id,
+            participants: [], // Empty array to get all participants
             maxResults: 100,
             pageToken,
           });
@@ -234,6 +235,7 @@ async function backfillRecentMessages(env: Env, logger: Logger): Promise<void> {
         do {
           const response = await openPhoneClient.listMessages({
             phoneNumberId: phoneNumber.id,
+            participants: [], // Empty array to get all participants
             maxResults: 100,
             pageToken,
           });
@@ -347,6 +349,7 @@ async function updatePendingCallData(env: Env, logger: Logger): Promise<void> {
         do {
           const response = await openPhoneClient.listCalls({
             phoneNumberId: phoneNumber.id,
+            participants: [], // Empty array to get all participants
             maxResults: 100,
             pageToken,
           });
