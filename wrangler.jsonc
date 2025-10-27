@@ -12,7 +12,8 @@
   "vars": {
     "OPENPHONE_API_BASE": "https://api.openphone.com/v1",
     "LOG_LEVEL": "info",
-    "WEBHOOK_PATH": "/webhooks/openphone"
+    "WEBHOOK_PATH": "/webhooks/openphone",
+    "NOTION_CANVAS_DATABASE_ID": "data-source-95"
   },
 
   // R2 bucket for storing call recordings

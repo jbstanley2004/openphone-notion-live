@@ -30,7 +30,7 @@ export class NotionClient {
   private client: NotionFetchClient;
   private callsDatabaseId: string;
   private messagesDatabaseId: string;
-  private canvasDatabaseId: string;
+  private canvasDatabaseId: string | null;
   private logger: Logger;
 
   constructor(env: Env, logger: Logger) {
@@ -51,15 +51,15 @@ export class NotionClient {
       throw new Error('NOTION_MESSAGES_DATABASE_ID is missing or empty');
     }
 
-    if (!canvasDatabaseId) {
-      throw new Error('NOTION_CANVAS_DATABASE_ID is missing or empty');
-    }
-
     this.client = new NotionFetchClient(notionApiKey);
     this.callsDatabaseId = callsDatabaseId;
     this.messagesDatabaseId = messagesDatabaseId;
-    this.canvasDatabaseId = canvasDatabaseId;
+    this.canvasDatabaseId = canvasDatabaseId || null;
     this.logger = logger;
+
+    if (!this.canvasDatabaseId) {
+      this.logger.warn('NOTION_CANVAS_DATABASE_ID not configured - Canvas relationships will be skipped');
+    }
   }
 
   // ========================================================================
@@ -421,6 +421,11 @@ export class NotionClient {
    * Cleans the phone number (removes +1, spaces, etc.) before searching
    */
   async findCanvasByPhone(phoneNumber: string): Promise<string | null> {
+    // Skip if Canvas database is not configured
+    if (!this.canvasDatabaseId) {
+      return null;
+    }
+
     // Clean phone number (remove +1, spaces, dashes, parentheses)
     const cleanPhone = phoneNumber.replace(/^\+1/, '').replace(/\D/g, '');
 
@@ -461,6 +466,11 @@ export class NotionClient {
    * Find a Canvas page by email address
    */
   async findCanvasByEmail(email: string): Promise<string | null> {
+    // Skip if Canvas database is not configured
+    if (!this.canvasDatabaseId) {
+      return null;
+    }
+
     const normalizedEmail = email.toLowerCase().trim();
 
     this.logger.info('Searching for Canvas by email', { email: normalizedEmail });
