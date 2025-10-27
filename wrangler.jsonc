@@ -6,8 +6,12 @@
   "account_id": "506f4c81d1f66559b4df239fd1e39394",
   "observability": {
     "enabled": true,
-    "head_sampling_rate": 1
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true
+    }
   },
+  "logpush": true,
 
   // Environment variables (non-sensitive)
   "vars": {
@@ -103,6 +107,36 @@
     "crons": [
       "0 */6 * * *"  // Run every 6 hours (reduced from 15 min - Durable Objects handle most sync now)
     ]
+  },
+
+  // Workers AI for intelligent call processing
+  "ai": {
+    "binding": "AI"
+  },
+
+  // Vectorize for semantic search across calls/messages
+  "vectorize": {
+    "bindings": [
+      {
+        "binding": "CALL_VECTORS",
+        "index_name": "openphone-calls"
+      }
+    ]
+  },
+
+  // Workflows for complex multi-step processing
+  "workflows": [
+    {
+      "binding": "CALL_PROCESSING_WORKFLOW",
+      "name": "call-processing-workflow",
+      "class_name": "CallProcessingWorkflow"
+    }
+  ],
+
+  // Static Assets for real-time dashboard
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
   },
 
   // Route configuration (update with your domain)

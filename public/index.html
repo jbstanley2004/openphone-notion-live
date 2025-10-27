@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenPhone-Notion Sync Dashboard</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #333;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .header {
+      background: white;
+      padding: 30px;
+      border-radius: 12px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+      margin-bottom: 30px;
+    }
+
+    .header h1 {
+      color: #667eea;
+      font-size: 32px;
+      margin-bottom: 10px;
+    }
+
+    .header p {
+      color: #666;
+      font-size: 16px;
+    }
+
+    .status {
+      display: inline-block;
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 14px;
+      font-weight: 600;
+      margin-left: 15px;
+    }
+
+    .status.healthy {
+      background: #d4edda;
+      color: #155724;
+    }
+
+    .status.warning {
+      background: #fff3cd;
+      color: #856404;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 20px;
+      margin-bottom: 30px;
+    }
+
+    .card {
+      background: white;
+      padding: 25px;
+      border-radius: 12px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+
+    .card h2 {
+      font-size: 18px;
+      color: #667eea;
+      margin-bottom: 15px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .metric {
+      font-size: 36px;
+      font-weight: 700;
+      color: #333;
+      margin: 10px 0;
+    }
+
+    .label {
+      font-size: 14px;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .chart {
+      height: 200px;
+      background: #f8f9fa;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #999;
+      margin-top: 15px;
+    }
+
+    .log-entry {
+      padding: 12px;
+      border-left: 3px solid #667eea;
+      background: #f8f9fa;
+      margin-bottom: 10px;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+
+    .log-entry .timestamp {
+      color: #999;
+      font-size: 12px;
+      margin-bottom: 5px;
+    }
+
+    .log-entry .message {
+      color: #333;
+    }
+
+    .log-entry.error {
+      border-left-color: #dc3545;
+      background: #f8d7da;
+    }
+
+    .log-entry.warning {
+      border-left-color: #ffc107;
+      background: #fff3cd;
+    }
+
+    .feature-tag {
+      display: inline-block;
+      padding: 4px 10px;
+      background: #667eea;
+      color: white;
+      border-radius: 12px;
+      font-size: 12px;
+      margin-right: 5px;
+      margin-bottom: 5px;
+    }
+
+    .feature-tag.new {
+      background: #28a745;
+    }
+
+    .feature-list {
+      margin-top: 15px;
+    }
+
+    .refresh-btn {
+      background: #667eea;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      transition: background 0.3s;
+    }
+
+    .refresh-btn:hover {
+      background: #5568d3;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .loading {
+      animation: pulse 2s ease-in-out infinite;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>
+        OpenPhone-Notion Sync Dashboard
+        <span class="status healthy" id="status">Healthy</span>
+      </h1>
+      <p>Real-time monitoring and analytics powered by Cloudflare Workers</p>
+      <div class="feature-list">
+        <span class="feature-tag new">Workers AI</span>
+        <span class="feature-tag new">Vectorize Search</span>
+        <span class="feature-tag new">Workflows</span>
+        <span class="feature-tag new">Smart Caching</span>
+        <span class="feature-tag">Durable Objects</span>
+        <span class="feature-tag">D1 Database</span>
+        <span class="feature-tag">R2 Storage</span>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>
+          Calls Synced
+          <button class="refresh-btn" onclick="refreshStats()">Refresh</button>
+        </h2>
+        <div class="metric" id="calls-synced">-</div>
+        <div class="label">Total Calls</div>
+        <div class="chart">Call Volume Chart</div>
+      </div>
+
+      <div class="card">
+        <h2>Messages Synced</h2>
+        <div class="metric" id="messages-synced">-</div>
+        <div class="label">Total Messages</div>
+        <div class="chart">Message Volume Chart</div>
+      </div>
+
+      <div class="card">
+        <h2>AI Analysis</h2>
+        <div class="metric" id="ai-analyzed">-</div>
+        <div class="label">Calls Analyzed</div>
+        <div style="margin-top: 15px;">
+          <div style="margin-bottom: 8px;">
+            <span style="font-size: 14px; color: #666;">Avg Sentiment:</span>
+            <span style="font-size: 18px; font-weight: 600;" id="avg-sentiment">Positive</span>
+          </div>
+          <div>
+            <span style="font-size: 14px; color: #666;">Avg Lead Score:</span>
+            <span style="font-size: 18px; font-weight: 600;" id="avg-lead-score">75/100</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Cache Performance</h2>
+        <div class="metric" id="cache-hit-rate">-</div>
+        <div class="label">Hit Rate</div>
+        <div style="margin-top: 15px;">
+          <div style="margin-bottom: 8px;">
+            <span style="font-size: 14px; color: #666;">Avg Lookup Time:</span>
+            <span style="font-size: 18px; font-weight: 600;" id="avg-lookup">~5ms</span>
+          </div>
+          <div>
+            <span style="font-size: 14px; color: #666;">Cached Canvases:</span>
+            <span style="font-size: 18px; font-weight: 600;" id="cached-canvases">-</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card" style="grid-column: 1 / -1;">
+        <h2>Recent Activity</h2>
+        <div id="activity-log">
+          <div class="log-entry loading">
+            <div class="timestamp">Loading...</div>
+            <div class="message">Fetching recent activity...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Semantic Search</h2>
+        <p style="color: #666; font-size: 14px; margin-bottom: 15px;">
+          Search across all calls and messages using natural language
+        </p>
+        <input
+          type="text"
+          id="search-input"
+          placeholder="e.g., 'Find all calls about pricing'"
+          style="width: 100%; padding: 12px; border: 2px solid #e0e0e0; border-radius: 6px; font-size: 14px;"
+        />
+        <button
+          onclick="performSearch()"
+          style="width: 100%; margin-top: 10px; background: #667eea; color: white; border: none; padding: 12px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;"
+        >
+          Search
+        </button>
+        <div id="search-results" style="margin-top: 15px;"></div>
+      </div>
+
+      <div class="card" style="grid-column: span 2;">
+        <h2>System Information</h2>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 15px;">
+          <div>
+            <div class="label">Worker Version</div>
+            <div style="font-size: 18px; font-weight: 600; margin-top: 5px;">2.0.0</div>
+          </div>
+          <div>
+            <div class="label">Compatibility Date</div>
+            <div style="font-size: 18px; font-weight: 600; margin-top: 5px;">2025-03-07</div>
+          </div>
+          <div>
+            <div class="label">Active Features</div>
+            <div style="font-size: 18px; font-weight: 600; margin-top: 5px;">11</div>
+          </div>
+          <div>
+            <div class="label">Uptime</div>
+            <div style="font-size: 18px; font-weight: 600; margin-top: 5px;" id="uptime">-</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Dashboard JavaScript
+    let startTime = Date.now();
+
+    async function refreshStats() {
+      try {
+        const response = await fetch('/api/stats');
+        const data = await response.json();
+
+        document.getElementById('calls-synced').textContent = data.totalCalls || '-';
+        document.getElementById('messages-synced').textContent = data.totalMessages || '-';
+        document.getElementById('ai-analyzed').textContent = data.aiAnalyzed || '-';
+        document.getElementById('cache-hit-rate').textContent = (data.cacheHitRate || 0) + '%';
+        document.getElementById('cached-canvases').textContent = data.cachedCanvases || '-';
+
+        // Update activity log
+        if (data.recentActivity) {
+          const logDiv = document.getElementById('activity-log');
+          logDiv.innerHTML = data.recentActivity.map(activity => `
+            <div class="log-entry ${activity.level}">
+              <div class="timestamp">${new Date(activity.timestamp).toLocaleString()}</div>
+              <div class="message">${activity.message}</div>
+            </div>
+          `).join('');
+        }
+      } catch (error) {
+        console.error('Failed to fetch stats:', error);
+        document.getElementById('status').textContent = 'Error';
+        document.getElementById('status').className = 'status warning';
+      }
+    }
+
+    async function performSearch() {
+      const query = document.getElementById('search-input').value;
+      if (!query) return;
+
+      const resultsDiv = document.getElementById('search-results');
+      resultsDiv.innerHTML = '<div style="color: #999; padding: 10px;">Searching...</div>';
+
+      try {
+        const response = await fetch('/api/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query })
+        });
+
+        const data = await response.json();
+
+        if (data.results && data.results.length > 0) {
+          resultsDiv.innerHTML = data.results.map(result => `
+            <div style="padding: 10px; border-left: 3px solid #667eea; background: #f8f9fa; margin-bottom: 10px; border-radius: 4px;">
+              <div style="font-weight: 600; margin-bottom: 5px;">${result.type} - Score: ${(result.score * 100).toFixed(0)}%</div>
+              <div style="font-size: 12px; color: #666;">${result.metadata.timestamp}</div>
+            </div>
+          `).join('');
+        } else {
+          resultsDiv.innerHTML = '<div style="color: #999; padding: 10px;">No results found</div>';
+        }
+      } catch (error) {
+        resultsDiv.innerHTML = '<div style="color: #dc3545; padding: 10px;">Search failed</div>';
+      }
+    }
+
+    function updateUptime() {
+      const uptime = Math.floor((Date.now() - startTime) / 1000);
+      const hours = Math.floor(uptime / 3600);
+      const minutes = Math.floor((uptime % 3600) / 60);
+      const seconds = uptime % 60;
+
+      document.getElementById('uptime').textContent =
+        `${hours}h ${minutes}m ${seconds}s`;
+    }
+
+    // Initial load
+    refreshStats();
+    updateUptime();
+
+    // Auto-refresh every 30 seconds
+    setInterval(refreshStats, 30000);
+    setInterval(updateUptime, 1000);
+
+    // Enter key for search
+    document.getElementById('search-input').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') performSearch();
+    });
+  </script>
+</body>
+</html>
