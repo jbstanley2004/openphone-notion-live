@@ -131,7 +131,7 @@ OPENPHONE_API_KEY=your_openphone_api_key
 NOTION_API_KEY=your_notion_integration_token
 NOTION_CALLS_DATABASE_ID=your_calls_database_id
 NOTION_MESSAGES_DATABASE_ID=your_messages_database_id
-NOTION_CANVAS_DATABASE_ID=fc0e485b6570460e995b94431b08f0a7
+NOTION_CANVAS_DATABASE_ID=data-source-95
 WEBHOOK_SECRET=optional_webhook_signature_secret
 ALERT_WEBHOOK_URL=optional_slack_webhook_url
 ```
