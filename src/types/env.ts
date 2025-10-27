@@ -17,6 +17,7 @@ export interface Env {
   NOTION_API_KEY: string;
   NOTION_CALLS_DATABASE_ID: string;
   NOTION_MESSAGES_DATABASE_ID: string;
+  NOTION_CANVAS_DATABASE_ID: string;
   WEBHOOK_SECRET?: string; // Optional webhook signature validation
   ALERT_WEBHOOK_URL?: string; // Optional alert webhook (Slack, Discord, etc.)
 
@@ -26,7 +27,6 @@ export interface Env {
   OPENPHONE_API_BASE: string;
   LOG_LEVEL: 'debug' | 'info' | 'warn' | 'error';
   WEBHOOK_PATH: string;
-  NOTION_CANVAS_DATABASE_ID?: string; // Optional Canvas database ID for relationships
 
   // ========================================================================
   // Bindings
