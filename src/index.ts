@@ -1,12 +1,21 @@
 /**
  * OpenPhone to Notion Sync - Main Worker
  * Webhook receiver and queue consumer
+ *
+ * Architecture:
+ * - Durable Objects: Per-phone-number sync coordination (real-time)
+ * - D1 Database: Analytics and sync history (reporting)
+ * - Webhooks: Real-time event processing
+ * - Cron: Periodic backfill and health checks
  */
 
 import type { Env, QueuedWebhookEvent } from './types/env';
 import type { WebhookEvent } from './types/openphone';
 import { createLogger } from './utils/logger';
 import { isEventProcessed, markEventProcessed } from './utils/helpers';
+
+// Export Durable Object
+export { PhoneNumberSync } from './durable-objects/phone-number-sync';
 
 export default {
   /**
