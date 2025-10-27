@@ -61,14 +61,14 @@ export interface Env {
   // Workers AI for intelligent call analysis
   AI: Ai;
 
-  // Vectorize for semantic search
-  CALL_VECTORS: Vectorize;
+  // Vectorize for semantic search (optional - needs to be created first)
+  CALL_VECTORS?: Vectorize;
 
-  // Workflows for complex multi-step processing
-  CALL_PROCESSING_WORKFLOW: Fetcher;
+  // Workflows for complex multi-step processing (optional - beta feature)
+  CALL_PROCESSING_WORKFLOW?: Fetcher;
 
   // Static Assets for dashboard
-  ASSETS: Fetcher;
+  ASSETS?: Fetcher;
 }
 
 // ========================================================================

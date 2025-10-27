@@ -35,6 +35,12 @@ export async function indexCall(
   env: Env,
   logger: Logger
 ): Promise<void> {
+  // Check if Vectorize is available
+  if (!env.CALL_VECTORS) {
+    logger.debug('Vectorize not configured, skipping indexing', { callId: call.id });
+    return;
+  }
+
   try {
     // Build searchable text from call data
     const searchableText = buildCallSearchText(call, transcript, summary);
@@ -83,6 +89,12 @@ export async function indexMessage(
   env: Env,
   logger: Logger
 ): Promise<void> {
+  // Check if Vectorize is available
+  if (!env.CALL_VECTORS) {
+    logger.debug('Vectorize not configured, skipping indexing', { messageId: message.id });
+    return;
+  }
+
   try {
     const searchableText = buildMessageSearchText(message, summary);
 
@@ -133,6 +145,12 @@ export async function semanticSearch(
   env: Env,
   logger: Logger
 ): Promise<VectorSearchResult[]> {
+  // Check if Vectorize is available
+  if (!env.CALL_VECTORS) {
+    logger.debug('Vectorize not configured, skipping search');
+    return [];
+  }
+
   try {
     const startTime = Date.now();
 
@@ -205,6 +223,12 @@ export async function findSimilarCalls(
   env: Env,
   logger: Logger
 ): Promise<VectorSearchResult[]> {
+  // Check if Vectorize is available
+  if (!env.CALL_VECTORS) {
+    logger.debug('Vectorize not configured, skipping similar search');
+    return [];
+  }
+
   try {
     // Get the call's vector
     const callVector = await env.CALL_VECTORS.getByIds([`call:${callId}`]);

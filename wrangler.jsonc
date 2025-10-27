@@ -115,23 +115,25 @@
   },
 
   // Vectorize for semantic search across calls/messages
-  "vectorize": {
-    "bindings": [
-      {
-        "binding": "CALL_VECTORS",
-        "index_name": "openphone-calls"
-      }
-    ]
-  },
+  // Note: Vectorize must be created first: wrangler vectorize create openphone-calls --dimensions=768 --metric=cosine
+  // Commenting out until index is created
+  // "vectorize": [
+  //   {
+  //     "binding": "CALL_VECTORS",
+  //     "index_name": "openphone-calls"
+  //   }
+  // ],
 
   // Workflows for complex multi-step processing
-  "workflows": [
-    {
-      "binding": "CALL_PROCESSING_WORKFLOW",
-      "name": "call-processing-workflow",
-      "class_name": "CallProcessingWorkflow"
-    }
-  ],
+  // Note: Workflows feature is in beta and may not be available yet
+  // Commenting out until feature is generally available
+  // "workflows": [
+  //   {
+  //     "binding": "CALL_PROCESSING_WORKFLOW",
+  //     "name": "call-processing-workflow",
+  //     "class_name": "CallProcessingWorkflow"
+  //   }
+  // ],
 
   // Static Assets for real-time dashboard
   "assets": {
