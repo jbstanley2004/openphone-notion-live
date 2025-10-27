@@ -64,19 +64,47 @@ async function backfillRecentCalls(env: Env, logger: Logger): Promise<void> {
 
     for (const phoneNumber of phoneNumbers) {
       try {
-        const calls = await openPhoneClient.listCalls({
-          phoneNumberId: phoneNumber.id,
-          createdAfter: oneDayAgo,
-          maxResults: 100,
+        // Fetch all calls with pagination (100 per page is API max)
+        let allCalls: any[] = [];
+        let pageToken: string | undefined = undefined;
+        let pageCount = 0;
+        const maxPages = 100; // Increased to 10,000 calls max per phone number (100 pages * 100)
+
+        do {
+          const response = await openPhoneClient.listCalls({
+            phoneNumberId: phoneNumber.id,
+            participants: [], // Empty array to get all participants
+            maxResults: 100,
+            pageToken,
+          });
+
+          allCalls = allCalls.concat(response.data);
+          pageCount++;
+          pageToken = response.nextPageToken;
+
+          logger.debug('Fetched page of calls', {
+            page: pageCount,
+            pageSize: response.data.length,
+            hasMore: !!pageToken
+          });
+        } while (pageToken && pageCount < maxPages);
+
+        // Filter calls by date in memory since API may not support date filters
+        const recentCalls = allCalls.filter(call => {
+          const callDate = new Date(call.createdAt);
+          const cutoffDate = new Date(oneDayAgo);
+          return callDate >= cutoffDate;
         });
 
         logger.info('Found calls for phone number', {
           phoneNumberId: phoneNumber.id,
           phoneNumber: phoneNumber.number,
-          count: calls.length
+          pages: pageCount,
+          total: allCalls.length,
+          recent: recentCalls.length
         });
 
-        for (const call of calls) {
+        for (const call of recentCalls) {
       try {
         // Check if already synced
         const syncState = await getSyncState(env.SYNC_STATE, call.id);
@@ -198,19 +226,47 @@ async function backfillRecentMessages(env: Env, logger: Logger): Promise<void> {
 
     for (const phoneNumber of phoneNumbers) {
       try {
-        const messages = await openPhoneClient.listMessages({
-          phoneNumberId: phoneNumber.id,
-          createdAfter: oneDayAgo,
-          maxResults: 100,
+        // Fetch all messages with pagination
+        let allMessages: any[] = [];
+        let pageToken: string | undefined = undefined;
+        let pageCount = 0;
+        const maxPages = 100; // Increased to 10,000 messages max per phone number
+
+        do {
+          const response = await openPhoneClient.listMessages({
+            phoneNumberId: phoneNumber.id,
+            participants: [], // Empty array to get all participants
+            maxResults: 100,
+            pageToken,
+          });
+
+          allMessages = allMessages.concat(response.data);
+          pageCount++;
+          pageToken = response.nextPageToken;
+
+          logger.debug('Fetched page of messages', {
+            page: pageCount,
+            pageSize: response.data.length,
+            hasMore: !!pageToken
+          });
+        } while (pageToken && pageCount < maxPages);
+
+        // Filter messages by date in memory
+        const recentMessages = allMessages.filter(msg => {
+          const msgDate = new Date(msg.createdAt);
+          const cutoffDate = new Date(oneDayAgo);
+          return msgDate >= cutoffDate;
         });
 
         logger.info('Found messages for phone number', {
           phoneNumberId: phoneNumber.id,
           phoneNumber: phoneNumber.number,
-          count: messages.length
+          pages: pageCount,
+          total: allMessages.length,
+          recent: recentMessages.length
         });
 
-        for (const message of messages) {
+        for (const message of recentMessages) {
       try {
         // Check if already synced
         const syncState = await getSyncState(env.SYNC_STATE, message.id);
@@ -284,19 +340,41 @@ async function updatePendingCallData(env: Env, logger: Logger): Promise<void> {
 
     for (const phoneNumber of phoneNumbers) {
       try {
-        const calls = await openPhoneClient.listCalls({
-          phoneNumberId: phoneNumber.id,
-          createdAfter: sevenDaysAgo,
-          maxResults: 50, // Limit to avoid too much work
+        // Fetch calls with pagination for pending updates
+        let allCalls: any[] = [];
+        let pageToken: string | undefined = undefined;
+        let pageCount = 0;
+        const maxPages = 50; // Limit to 5,000 calls for pending updates
+
+        do {
+          const response = await openPhoneClient.listCalls({
+            phoneNumberId: phoneNumber.id,
+            participants: [], // Empty array to get all participants
+            maxResults: 100,
+            pageToken,
+          });
+
+          allCalls = allCalls.concat(response.data);
+          pageCount++;
+          pageToken = response.nextPageToken;
+        } while (pageToken && pageCount < maxPages);
+
+        // Filter calls by date in memory
+        const recentCalls = allCalls.filter(call => {
+          const callDate = new Date(call.createdAt);
+          const cutoffDate = new Date(sevenDaysAgo);
+          return callDate >= cutoffDate;
         });
 
         logger.info('Checking calls for phone number', {
           phoneNumberId: phoneNumber.id,
           phoneNumber: phoneNumber.number,
-          count: calls.length
+          pages: pageCount,
+          total: allCalls.length,
+          recent: recentCalls.length
         });
 
-        for (const call of calls) {
+        for (const call of recentCalls) {
       try {
         // Only check completed calls that are synced
         if (call.status !== 'completed') {

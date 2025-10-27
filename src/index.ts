@@ -1,12 +1,21 @@
 /**
  * OpenPhone to Notion Sync - Main Worker
  * Webhook receiver and queue consumer
+ *
+ * Architecture:
+ * - Durable Objects: Per-phone-number sync coordination (real-time)
+ * - D1 Database: Analytics and sync history (reporting)
+ * - Webhooks: Real-time event processing
+ * - Cron: Periodic backfill and health checks
  */
 
 import type { Env, QueuedWebhookEvent } from './types/env';
 import type { WebhookEvent } from './types/openphone';
 import { createLogger } from './utils/logger';
 import { isEventProcessed, markEventProcessed } from './utils/helpers';
+
+// Export Durable Object
+export { PhoneNumberSync } from './durable-objects/phone-number-sync';
 
 export default {
   /**
@@ -21,6 +30,47 @@ export default {
       // Health check endpoint
       if (url.pathname === '/health') {
         return new Response(JSON.stringify({ status: 'healthy', timestamp: new Date().toISOString() }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Debug Canvas lookup endpoint
+      if (url.pathname === '/debug/canvas' && request.method === 'POST') {
+        const { NotionClient } = await import('./utils/notion-client');
+        const notionClient = new NotionClient(env, logger);
+
+        const body = await request.json() as { phone?: string; email?: string };
+        const result: any = { timestamp: new Date().toISOString() };
+
+        if (body.phone) {
+          logger.info('Testing Canvas lookup by phone', { phone: body.phone });
+          result.phone = body.phone;
+          result.canvasId = await notionClient.findCanvasByPhone(body.phone);
+        }
+
+        if (body.email) {
+          logger.info('Testing Canvas lookup by email', { email: body.email });
+          result.email = body.email;
+          result.canvasIdByEmail = await notionClient.findCanvasByEmail(body.email);
+        }
+
+        return new Response(JSON.stringify(result, null, 2), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Debug database structure endpoint
+      if (url.pathname === '/debug/schema' && request.method === 'GET') {
+        const { NotionClient } = await import('./utils/notion-client');
+        const notionClient = new NotionClient(env, logger);
+
+        const debugInfo = await notionClient.getDebugInfo();
+        const result = {
+          timestamp: new Date().toISOString(),
+          ...debugInfo,
+        };
+
+        return new Response(JSON.stringify(result, null, 2), {
           headers: { 'Content-Type': 'application/json' },
         });
       }

@@ -537,38 +537,122 @@ export class NotionClient {
    * Cleans the phone number (removes +1, spaces, etc.) before searching
    */
   async findCanvasByPhone(phoneNumber: string): Promise<string | null> {
-    // Clean phone number (remove +1, spaces, dashes, parentheses)
-    const cleanPhone = phoneNumber.replace(/^\+1/, '').replace(/\D/g, '');
-
-    this.logger.info('Searching for Canvas by phone', {
-      original: phoneNumber,
-      cleaned: cleanPhone
-    });
+    this.logger.info('Searching for Canvas by phone', { original: phoneNumber });
 
     try {
-      const response = await this.client.databases.query({
-        database_id: this.canvasDatabaseId,
-        filter: {
-          property: 'Phone',
-          rich_text: {
-            contains: cleanPhone,
-          },
-        },
-      });
+      // Format phone number to match Canvas format: XXX-XXX-XXXX
+      // OpenPhone sends: +13214436893
+      // Canvas stores: 321-443-6893
+      const digitsOnly = phoneNumber.replace(/\D/g, '');
 
-      if (response.results.length > 0) {
-        const canvasId = response.results[0].id;
-        this.logger.info('Found Canvas record', {
-          phoneNumber,
-          canvasId
-        });
-        return canvasId;
+      // Remove leading 1 if present (US country code)
+      const withoutCountryCode = digitsOnly.startsWith('1') && digitsOnly.length === 11
+        ? digitsOnly.substring(1)
+        : digitsOnly;
+
+      // Format as XXX-XXX-XXXX if we have 10 digits
+      let formattedPhone = '';
+      if (withoutCountryCode.length === 10) {
+        formattedPhone = `${withoutCountryCode.substring(0, 3)}-${withoutCountryCode.substring(3, 6)}-${withoutCountryCode.substring(6)}`;
       }
 
-      this.logger.info('No Canvas record found for phone', { phoneNumber });
+      // Try multiple phone number formats
+      const formats = [
+        formattedPhone,              // 321-443-6893 (Canvas format)
+        withoutCountryCode,          // 3214436893
+        phoneNumber,                 // +13214436893 (original)
+        phoneNumber.replace(/^\+1/, ''), // 3214436893
+      ].filter(f => f); // Remove empty strings
+
+      // Remove duplicates
+      const uniqueFormats = [...new Set(formats)];
+      this.logger.info('Trying phone formats', { formats: uniqueFormats });
+
+      for (const format of uniqueFormats) {
+        this.logger.info('Trying phone format', { format });
+
+        // Try phone_number field type (exact match) - PRIMARY method for Canvas
+        try {
+          const phoneResponse = await this.client.databases.query({
+            database_id: this.canvasDatabaseId,
+            filter: {
+              property: 'Phone',
+              phone_number: {
+                equals: format,
+              },
+            },
+          });
+
+          this.logger.info('Phone number query completed', {
+            format,
+            resultsCount: phoneResponse.results.length
+          });
+
+          if (phoneResponse.results.length > 0) {
+            const canvasId = phoneResponse.results[0].id;
+            this.logger.info('Found Canvas record (phone_number field)', {
+              phoneNumber,
+              format,
+              canvasId,
+              totalResults: phoneResponse.results.length
+            });
+            return canvasId;
+          }
+        } catch (phoneError) {
+          this.logger.error('Phone field search failed', {
+            format,
+            error: String(phoneError),
+            stack: phoneError instanceof Error ? phoneError.stack : undefined
+          });
+        }
+
+        // Try rich_text field type as fallback (contains match)
+        try {
+          const textResponse = await this.client.databases.query({
+            database_id: this.canvasDatabaseId,
+            filter: {
+              property: 'Phone',
+              rich_text: {
+                contains: format,
+              },
+            },
+          });
+
+          this.logger.info('Rich text query completed', {
+            format,
+            resultsCount: textResponse.results.length
+          });
+
+          if (textResponse.results.length > 0) {
+            const canvasId = textResponse.results[0].id;
+            this.logger.info('Found Canvas record (rich_text field)', {
+              phoneNumber,
+              format,
+              canvasId,
+              totalResults: textResponse.results.length
+            });
+            return canvasId;
+          }
+        } catch (textError) {
+          this.logger.error('Rich text search failed for format', {
+            format,
+            error: String(textError),
+            stack: textError instanceof Error ? textError.stack : undefined
+          });
+        }
+      }
+
+      this.logger.warn('No Canvas record found for phone after trying all formats', {
+        phoneNumber,
+        formatsAttempted: uniqueFormats.length
+      });
       return null;
     } catch (error) {
-      this.logger.error('Error finding Canvas by phone', error);
+      this.logger.error('Fatal error finding Canvas by phone', {
+        phoneNumber,
+        error: String(error),
+        stack: error instanceof Error ? error.stack : undefined
+      });
       return null;
     }
   }
@@ -592,20 +676,113 @@ export class NotionClient {
         },
       });
 
+      this.logger.info('Email query completed', {
+        email: normalizedEmail,
+        resultsCount: response.results.length
+      });
+
       if (response.results.length > 0) {
         const canvasId = response.results[0].id;
-        this.logger.info('Found Canvas record', {
+        this.logger.info('Found Canvas record by email', {
           email: normalizedEmail,
-          canvasId
+          canvasId,
+          totalResults: response.results.length
         });
         return canvasId;
       }
 
-      this.logger.info('No Canvas record found for email', { email: normalizedEmail });
+      this.logger.warn('No Canvas record found for email', { email: normalizedEmail });
       return null;
     } catch (error) {
-      this.logger.error('Error finding Canvas by email', error);
+      this.logger.error('Error finding Canvas by email', {
+        email: normalizedEmail,
+        error: String(error),
+        stack: error instanceof Error ? error.stack : undefined
+      });
       return null;
     }
+  }
+
+  // ========================================================================
+  // Debug / Schema Inspection
+  // ========================================================================
+
+  /**
+   * Get database schema and sample records for debugging
+   */
+  async getDebugInfo(): Promise<any> {
+    const result: any = {};
+
+    try {
+      // Get Canvas schema
+      const canvasDb = await this.client.databases.retrieve({
+        database_id: this.canvasDatabaseId,
+      });
+
+      this.logger.info('Canvas database retrieved', { canvasDb: JSON.stringify(canvasDb).substring(0, 500) });
+
+      result.canvas = {
+        raw: canvasDb,
+        properties: canvasDb.properties ? Object.entries(canvasDb.properties).map(([name, prop]) => ({
+          name,
+          type: (prop as any).type,
+        })) : [],
+        sampleRecords: [],
+      };
+
+      // Get sample Canvas records
+      const canvasRecords = await this.client.databases.query({
+        database_id: this.canvasDatabaseId,
+        page_size: 3,
+      });
+
+      result.canvas.sampleRecords = canvasRecords.results.map((page: any) => {
+        const props = page.properties;
+        const title = Object.values(props).find((p: any) => p.type === 'title');
+        const titleText = title && 'title' in title ? title.title.map((t: any) => t.plain_text).join('') : '';
+
+        let phoneValue = null;
+        let phoneType = null;
+        if (props.Phone) {
+          phoneType = props.Phone.type;
+          if (props.Phone.type === 'phone_number') {
+            phoneValue = props.Phone.phone_number;
+          } else if (props.Phone.type === 'rich_text') {
+            phoneValue = props.Phone.rich_text.map((t: any) => t.plain_text).join('');
+          }
+        }
+
+        return {
+          id: page.id,
+          title: titleText,
+          phoneType,
+          phoneValue,
+        };
+      });
+
+      // Get recent Calls records
+      const callsRecords = await this.client.databases.query({
+        database_id: this.callsDatabaseId,
+        page_size: 3,
+        sorts: [{ timestamp: 'created_time', direction: 'descending' }],
+      });
+
+      result.recentCalls = callsRecords.results.map((page: any) => {
+        const props = page.properties;
+        return {
+          id: page.id,
+          callId: props['Call ID']?.title?.[0]?.plain_text,
+          direction: props.Direction?.select?.name,
+          participants: props.Participants?.rich_text?.map((t: any) => t.plain_text).join(''),
+          canvasRelationCount: props.Canvas?.relation?.length || 0,
+          canvasIds: props.Canvas?.relation?.map((r: any) => r.id) || [],
+        };
+      });
+    } catch (error) {
+      result.error = String(error);
+      result.errorStack = error instanceof Error ? error.stack : undefined;
+    }
+
+    return result;
   }
 }

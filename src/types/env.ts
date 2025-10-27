@@ -7,6 +7,8 @@ import type {
   R2Bucket,
   KVNamespace,
   AnalyticsEngineDataset,
+  D1Database,
+  DurableObjectNamespace,
 } from '@cloudflare/workers-types';
 
 export interface Env {
@@ -46,6 +48,12 @@ export interface Env {
 
   // Analytics Engine
   ANALYTICS: AnalyticsEngineDataset;
+
+  // D1 Database for analytics and history
+  DB: D1Database;
+
+  // Durable Object for per-phone-number sync coordination
+  PHONE_SYNC: DurableObjectNamespace;
 }
 
 // ========================================================================

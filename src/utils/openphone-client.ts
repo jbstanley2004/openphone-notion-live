@@ -101,8 +101,9 @@ export class OpenPhoneClient {
 
   /**
    * List calls with optional filters
+   * Returns full response with pagination info
    */
-  async listCalls(params?: CallsListParams): Promise<Call[]> {
+  async listCalls(params?: CallsListParams): Promise<OpenPhoneAPIListResponse<Call>> {
     const queryParams = new URLSearchParams();
     if (params) {
       Object.entries(params).forEach(([key, value]) => {
@@ -114,7 +115,7 @@ export class OpenPhoneClient {
 
     const endpoint = `/calls${queryParams.toString() ? `?${queryParams}` : ''}`;
     const response = await this.request<OpenPhoneAPIListResponse<Call>>(endpoint);
-    return response.data;
+    return response;
   }
 
   /**
@@ -214,8 +215,9 @@ export class OpenPhoneClient {
 
   /**
    * List messages with optional filters
+   * Returns full response with pagination info
    */
-  async listMessages(params?: MessagesListParams): Promise<Message[]> {
+  async listMessages(params?: MessagesListParams): Promise<OpenPhoneAPIListResponse<Message>> {
     const queryParams = new URLSearchParams();
     if (params) {
       Object.entries(params).forEach(([key, value]) => {
@@ -227,7 +229,7 @@ export class OpenPhoneClient {
 
     const endpoint = `/messages${queryParams.toString() ? `?${queryParams}` : ''}`;
     const response = await this.request<OpenPhoneAPIListResponse<Message>>(endpoint);
-    return response.data;
+    return response;
   }
 
   // ========================================================================
