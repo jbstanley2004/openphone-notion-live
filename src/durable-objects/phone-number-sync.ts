@@ -11,6 +11,7 @@
  * - Coordinates webhooks + scheduled backfill
  */
 
+import type { DurableObjectState } from '@cloudflare/workers-types';
 import type { Env } from '../types/env';
 import type { Call, Message } from '../types/openphone';
 import { Logger, createLogger } from '../utils/logger';
@@ -29,13 +30,16 @@ interface PhoneNumberState {
   totalMessagesSynced: number;
 }
 
-export class PhoneNumberSync extends DurableObject<Env> {
+export class PhoneNumberSync {
+  private ctx: DurableObjectState;
+  private env: Env;
   private state: PhoneNumberState | null = null;
   private logger: Logger;
   private syncInProgress = false;
 
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
+  constructor(state: DurableObjectState, env: Env) {
+    this.ctx = state;
+    this.env = env;
     this.logger = createLogger(env);
   }
 
@@ -158,7 +162,7 @@ export class PhoneNumberSync extends DurableObject<Env> {
       this.logger.info('Syncing calls', { since, phoneNumberId: this.state.phoneNumberId });
 
       const response = await openPhoneClient.listCalls({
-        phoneNumberId: this.state.phoneNumberId,
+        phoneNumberId: this.state.phoneNumberId as any,
         participants: [],
         maxResults: 100,
       });
@@ -410,8 +414,8 @@ export class PhoneNumberSync extends DurableObject<Env> {
     try {
       // Initialize endpoint - called once when DO is first created
       if (path === '/init' && request.method === 'POST') {
-        const { phoneNumberId, phoneNumber } = await request.json();
-        await this.ensureInitialized(phoneNumberId, phoneNumber);
+        const body = await request.json() as { phoneNumberId: string; phoneNumber: string };
+        await this.ensureInitialized(body.phoneNumberId, body.phoneNumber);
         return new Response(JSON.stringify({ status: 'initialized', state: this.state }), {
           headers: { 'Content-Type': 'application/json' },
         });
