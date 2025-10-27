@@ -11,6 +11,7 @@ import type {
   CallSummary,
   CallVoicemail,
   Message,
+  Mail,
 } from '../types/openphone';
 import type { Env } from '../types/env';
 import {
@@ -23,6 +24,7 @@ import {
   createUrl,
   createPhoneNumber,
   createRelation,
+  createEmail,
 } from '../types/notion';
 import { Logger } from './logger';
 
@@ -31,6 +33,7 @@ export class NotionClient {
   private callsDatabaseId: string;
   private messagesDatabaseId: string;
   private canvasDatabaseId: string;
+  private mailDatabaseId: string;
   private logger: Logger;
 
   constructor(env: Env, logger: Logger) {
@@ -38,6 +41,7 @@ export class NotionClient {
     const callsDatabaseId = env.NOTION_CALLS_DATABASE_ID?.trim();
     const messagesDatabaseId = env.NOTION_MESSAGES_DATABASE_ID?.trim();
     const canvasDatabaseId = env.NOTION_CANVAS_DATABASE_ID?.trim();
+    const mailDatabaseId = env.NOTION_MAIL_DATABASE_ID?.trim();
 
     if (!notionApiKey) {
       throw new Error('NOTION_API_KEY is missing or empty');
@@ -55,10 +59,15 @@ export class NotionClient {
       throw new Error('NOTION_CANVAS_DATABASE_ID is missing or empty');
     }
 
+    if (!mailDatabaseId) {
+      throw new Error('NOTION_MAIL_DATABASE_ID is missing or empty');
+    }
+
     this.client = new NotionFetchClient(notionApiKey);
     this.callsDatabaseId = callsDatabaseId;
     this.messagesDatabaseId = messagesDatabaseId;
     this.canvasDatabaseId = canvasDatabaseId;
+    this.mailDatabaseId = mailDatabaseId;
     this.logger = logger;
   }
 
@@ -365,6 +374,94 @@ export class NotionClient {
   }
 
   // ========================================================================
+  // Mail Database Operations
+  // ========================================================================
+
+  /**
+   * Create a mail page in Notion
+   */
+  async createMailPage(mail: Mail): Promise<string> {
+    this.logger.info('Creating mail page in Notion', { mailId: mail.id });
+
+    // Find Canvas relation by email address
+    // For incoming mail, use the "from" email
+    // For outgoing mail, use the first "to" email
+    let canvasId: string | null = null;
+
+    const emailToLookup = mail.direction === 'incoming'
+      ? mail.from
+      : (mail.to[0] || null);
+
+    if (emailToLookup) {
+      canvasId = await this.findCanvasByEmail(emailToLookup);
+    }
+
+    const properties = {
+      'Subject': createTitle(mail.subject || '(No Subject)'),
+      'From': createEmail(mail.from),
+      'To': createRichText(mail.to.join(', ')),
+      'CC': createRichText(mail.cc?.join(', ') || ''),
+      'BCC': createRichText(mail.bcc?.join(', ') || ''),
+      'Body': createRichText(mail.body),
+      'Direction': createSelect(mail.direction),
+      'Status': createSelect(mail.status),
+      'Created At': createDate(mail.createdAt),
+      'Updated At': createDate(mail.updatedAt),
+      'Has Attachments': createCheckbox(!!mail.attachments && mail.attachments.length > 0),
+      'Attachments': createRichText(
+        mail.attachments?.map(a => `${a.filename} (${a.contentType}, ${a.size} bytes)`).join('\n') || ''
+      ),
+      'Canvas': createRelation(canvasId ? [canvasId] : []),
+      'Raw Data': createRichText(JSON.stringify(mail, null, 2)),
+      'Synced At': createDate(new Date().toISOString()),
+    };
+
+    try {
+      const response = await this.client.pages.create({
+        parent: {
+          database_id: this.mailDatabaseId,
+        },
+        properties: properties as any,
+      });
+
+      this.logger.info('Mail page created successfully', {
+        mailId: mail.id,
+        notionPageId: response.id,
+      });
+
+      return response.id;
+    } catch (error) {
+      this.logger.error('Failed to create mail page', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update an existing mail page
+   */
+  async updateMailPage(pageId: string, mail: Mail): Promise<void> {
+    this.logger.info('Updating mail page in Notion', { mailId: mail.id, pageId });
+
+    const properties = {
+      'Status': createSelect(mail.status),
+      'Updated At': createDate(mail.updatedAt),
+      'Body': createRichText(mail.body),
+    };
+
+    try {
+      await this.client.pages.update({
+        page_id: pageId,
+        properties: properties as any,
+      });
+
+      this.logger.info('Mail page updated successfully', { mailId: mail.id, pageId });
+    } catch (error) {
+      this.logger.error('Failed to update mail page', error);
+      throw error;
+    }
+  }
+
+  // ========================================================================
   // Search and Query Operations
   // ========================================================================
 
@@ -410,6 +507,13 @@ export class NotionClient {
    */
   async messagePageExists(messageId: string): Promise<string | null> {
     return this.findPageByResourceId(this.messagesDatabaseId, messageId, 'Message ID');
+  }
+
+  /**
+   * Check if a mail page exists
+   */
+  async mailPageExists(mailId: string): Promise<string | null> {
+    return this.findPageByResourceId(this.mailDatabaseId, mailId, 'Subject');
   }
 
   // ========================================================================

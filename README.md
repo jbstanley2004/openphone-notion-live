@@ -132,6 +132,7 @@ NOTION_API_KEY=your_notion_integration_token
 NOTION_CALLS_DATABASE_ID=your_calls_database_id
 NOTION_MESSAGES_DATABASE_ID=your_messages_database_id
 NOTION_CANVAS_DATABASE_ID=fc0e485b6570460e995b94431b08f0a7
+NOTION_MAIL_DATABASE_ID=20af9371362f8031b737fda7c8c9797d
 WEBHOOK_SECRET=optional_webhook_signature_secret
 ALERT_WEBHOOK_URL=optional_slack_webhook_url
 ```
@@ -144,6 +145,7 @@ wrangler secret put NOTION_API_KEY
 wrangler secret put NOTION_CALLS_DATABASE_ID
 wrangler secret put NOTION_MESSAGES_DATABASE_ID
 wrangler secret put NOTION_CANVAS_DATABASE_ID
+wrangler secret put NOTION_MAIL_DATABASE_ID
 # Optional:
 wrangler secret put WEBHOOK_SECRET
 wrangler secret put ALERT_WEBHOOK_URL
