@@ -96,28 +96,47 @@ export class NotionClient {
     // For outgoing calls: link to the recipient (merchant I'm calling)
     let canvasId: string | null = null;
 
+    // Filter out my own phone number to avoid matching my own Canvas record
+    const MY_PHONE_NUMBER = '+13365185544';
+    const otherParticipants = call.participants.filter(p => {
+      const normalized = p.replace(/\D/g, '');
+      const myNormalized = MY_PHONE_NUMBER.replace(/\D/g, '');
+      return normalized !== myNormalized;
+    });
+
+    this.logger.info('Finding Canvas for participants', {
+      allParticipants: call.participants,
+      filteredParticipants: otherParticipants,
+      direction: call.direction,
+    });
+
     if (call.direction === 'incoming') {
-      // For incoming calls, find the caller's number
-      // Try each participant until we find a matching Canvas entry
-      // This handles cases where participants includes both caller and our number
-      for (const participant of call.participants) {
+      // For incoming calls, find the caller's number (excluding my number)
+      for (const participant of otherParticipants) {
         const foundCanvas = await this.findCanvasByPhone(participant);
         if (foundCanvas) {
           canvasId = foundCanvas;
+          this.logger.info('Found Canvas for incoming call', { participant, canvasId });
           break;
         }
       }
     } else if (call.direction === 'outgoing') {
-      // For outgoing calls, find the recipient's (merchant's) number
-      // Try each participant until we find a matching Canvas entry
-      // This ensures we link to the merchant being called
-      for (const participant of call.participants) {
+      // For outgoing calls, find the recipient's (merchant's) number (excluding my number)
+      for (const participant of otherParticipants) {
         const foundCanvas = await this.findCanvasByPhone(participant);
         if (foundCanvas) {
           canvasId = foundCanvas;
+          this.logger.info('Found Canvas for outgoing call', { participant, canvasId });
           break;
         }
       }
+    }
+
+    if (!canvasId && otherParticipants.length > 0) {
+      this.logger.warn('No Canvas found for any participant', {
+        participants: otherParticipants,
+        direction: call.direction,
+      });
     }
 
     // Format transcript dialogue
@@ -306,16 +325,31 @@ export class NotionClient {
     this.logger.info('Creating message page in Notion', { messageId: message.id });
 
     // Find Canvas relation by phone number
-    // For incoming messages, use the "from" number
-    // For outgoing messages, use the "to" number
+    // For incoming messages, use the "from" number (sender)
+    // For outgoing messages, use the "to" number (recipient)
     let canvasId: string | null = null;
 
+    const MY_PHONE_NUMBER = '+13365185544';
     const phoneToLookup = message.direction === 'incoming'
       ? message.from
       : (message.to[0] || null);
 
+    // Safety check: ensure we're not looking up our own number
     if (phoneToLookup) {
-      canvasId = await this.findCanvasByPhone(phoneToLookup);
+      const normalized = phoneToLookup.replace(/\D/g, '');
+      const myNormalized = MY_PHONE_NUMBER.replace(/\D/g, '');
+
+      if (normalized !== myNormalized) {
+        this.logger.info('Looking up Canvas for message', {
+          direction: message.direction,
+          phoneNumber: phoneToLookup,
+        });
+        canvasId = await this.findCanvasByPhone(phoneToLookup);
+      } else {
+        this.logger.warn('Skipping Canvas lookup - phone number is my own', {
+          phoneNumber: phoneToLookup,
+        });
+      }
     }
 
     const properties = {
