@@ -22,7 +22,7 @@ export interface Env {
   ALERT_WEBHOOK_URL?: string; // Optional alert webhook (Slack, Discord, etc.)
 
   // ========================================================================
-  // Environment Variables
+  // Environment Variables (set in wrangler.jsonc vars)
   // ========================================================================
   OPENPHONE_API_BASE: string;
   LOG_LEVEL: 'debug' | 'info' | 'warn' | 'error';

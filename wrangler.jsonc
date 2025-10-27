@@ -3,6 +3,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2025-03-07",
   "compatibility_flags": ["nodejs_compat"],
+  "account_id": "506f4c81d1f66559b4df239fd1e39394",
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
