@@ -51,20 +51,32 @@ async function backfillRecentCalls(env: Env, logger: Logger): Promise<void> {
   const r2Client = new R2Client(env.RECORDINGS_BUCKET, logger);
 
   try {
-    // Fetch calls from the last 24 hours
-    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const calls = await openPhoneClient.listCalls({
-      createdAfter: oneDayAgo,
-      maxResults: 100,
-    });
-
-    logger.info('Found calls for backfill', { count: calls.length });
+    // Get all phone numbers first (required by OpenPhone API)
+    const phoneNumbers = await openPhoneClient.listPhoneNumbers();
+    logger.info('Found phone numbers', { count: phoneNumbers.length });
 
     let synced = 0;
     let skipped = 0;
     let failed = 0;
 
-    for (const call of calls) {
+    // Fetch calls from the last 24 hours for each phone number
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+    for (const phoneNumber of phoneNumbers) {
+      try {
+        const calls = await openPhoneClient.listCalls({
+          phoneNumberId: phoneNumber.id,
+          createdAfter: oneDayAgo,
+          maxResults: 100,
+        });
+
+        logger.info('Found calls for phone number', {
+          phoneNumberId: phoneNumber.id,
+          phoneNumber: phoneNumber.number,
+          count: calls.length
+        });
+
+        for (const call of calls) {
       try {
         // Check if already synced
         const syncState = await getSyncState(env.SYNC_STATE, call.id);
@@ -144,6 +156,13 @@ async function backfillRecentCalls(env: Env, logger: Logger): Promise<void> {
         logger.error('Failed to backfill call', { callId: call.id, error });
         await markAsFailed(env.SYNC_STATE, call.id, 'call', String(error), 1);
       }
+        }
+      } catch (error) {
+        logger.error('Failed to fetch calls for phone number', {
+          phoneNumberId: phoneNumber.id,
+          error
+        });
+      }
     }
 
     logger.info('Call backfill completed', { synced, skipped, failed });
@@ -166,20 +185,32 @@ async function backfillRecentMessages(env: Env, logger: Logger): Promise<void> {
   const notionClient = new NotionClient(env, logger);
 
   try {
-    // Fetch messages from the last 24 hours
-    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const messages = await openPhoneClient.listMessages({
-      createdAfter: oneDayAgo,
-      maxResults: 100,
-    });
-
-    logger.info('Found messages for backfill', { count: messages.length });
+    // Get all phone numbers first (required by OpenPhone API)
+    const phoneNumbers = await openPhoneClient.listPhoneNumbers();
+    logger.info('Found phone numbers', { count: phoneNumbers.length });
 
     let synced = 0;
     let skipped = 0;
     let failed = 0;
 
-    for (const message of messages) {
+    // Fetch messages from the last 24 hours for each phone number
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+    for (const phoneNumber of phoneNumbers) {
+      try {
+        const messages = await openPhoneClient.listMessages({
+          phoneNumberId: phoneNumber.id,
+          createdAfter: oneDayAgo,
+          maxResults: 100,
+        });
+
+        logger.info('Found messages for phone number', {
+          phoneNumberId: phoneNumber.id,
+          phoneNumber: phoneNumber.number,
+          count: messages.length
+        });
+
+        for (const message of messages) {
       try {
         // Check if already synced
         const syncState = await getSyncState(env.SYNC_STATE, message.id);
@@ -209,6 +240,13 @@ async function backfillRecentMessages(env: Env, logger: Logger): Promise<void> {
         logger.error('Failed to backfill message', { messageId: message.id, error });
         await markAsFailed(env.SYNC_STATE, message.id, 'message', String(error), 1);
       }
+        }
+      } catch (error) {
+        logger.error('Failed to fetch messages for phone number', {
+          phoneNumberId: phoneNumber.id,
+          error
+        });
+      }
     }
 
     logger.info('Message backfill completed', { synced, skipped, failed });
@@ -235,16 +273,30 @@ async function updatePendingCallData(env: Env, logger: Logger): Promise<void> {
   const notionClient = new NotionClient(env, logger);
 
   try {
-    // Check calls from the last 7 days (transcripts can take time to process)
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const calls = await openPhoneClient.listCalls({
-      createdAfter: sevenDaysAgo,
-      maxResults: 50, // Limit to avoid too much work
-    });
+    // Get all phone numbers first (required by OpenPhone API)
+    const phoneNumbers = await openPhoneClient.listPhoneNumbers();
+    logger.info('Found phone numbers', { count: phoneNumbers.length });
 
     let updated = 0;
 
-    for (const call of calls) {
+    // Check calls from the last 7 days (transcripts can take time to process)
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    for (const phoneNumber of phoneNumbers) {
+      try {
+        const calls = await openPhoneClient.listCalls({
+          phoneNumberId: phoneNumber.id,
+          createdAfter: sevenDaysAgo,
+          maxResults: 50, // Limit to avoid too much work
+        });
+
+        logger.info('Checking calls for phone number', {
+          phoneNumberId: phoneNumber.id,
+          phoneNumber: phoneNumber.number,
+          count: calls.length
+        });
+
+        for (const call of calls) {
       try {
         // Only check completed calls that are synced
         if (call.status !== 'completed') {
@@ -274,6 +326,13 @@ async function updatePendingCallData(env: Env, logger: Logger): Promise<void> {
         await sleep(200);
       } catch (error) {
         logger.error('Failed to update pending call', { callId: call.id, error });
+      }
+        }
+      } catch (error) {
+        logger.error('Failed to check pending calls for phone number', {
+          phoneNumberId: phoneNumber.id,
+          error
+        });
       }
     }
 
