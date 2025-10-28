@@ -217,7 +217,7 @@ async function extractActionItems(text: string, env: Env): Promise<string[]> {
         },
       ],
       max_tokens: 256,
-    });
+    } as any) as any;
 
     const content = response.response || '';
 
@@ -252,7 +252,7 @@ async function categorizeCall(context: string, env: Env): Promise<string> {
         },
       ],
       max_tokens: 10,
-    });
+    } as any) as any;
 
     const category = (response.response || 'general').toLowerCase().trim();
     const validCategories = ['sales', 'support', 'inquiry', 'follow-up', 'appointment', 'complaint', 'general'];
@@ -281,7 +281,7 @@ async function categorizeMessage(text: string, env: Env): Promise<string> {
         },
       ],
       max_tokens: 10,
-    });
+    } as any) as any;
 
     const category = (response.response || 'general').toLowerCase().trim();
     const validCategories = ['question', 'information', 'request', 'confirmation', 'general'];
