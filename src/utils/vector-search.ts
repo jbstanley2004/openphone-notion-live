@@ -12,8 +12,20 @@
  */
 
 import type { Env } from '../types/env';
-import type { Call, Message } from '../types/openphone';
+import type { Call, Message, Mail } from '../types/openphone';
 import type { Logger } from './logger';
+
+export interface VectorMetadata {
+  phoneNumber?: string;
+  timestamp: string;
+  notionPageId?: string;
+  type: 'call' | 'message' | 'mail';
+  direction?: string;
+  canvasId?: string;
+  merchantUuid?: string;
+  merchantName?: string;
+  interactionType?: 'call' | 'message' | 'mail';
+}
 
 export interface VectorSearchResult {
   id: string;
@@ -27,6 +39,13 @@ export interface VectorSearchResult {
     merchantUuid?: string | null;
     canvasId?: string | null;
   };
+  metadata: VectorMetadata;
+}
+
+interface VectorMetadataContext {
+  canvasId?: string | null;
+  merchantUuid?: string | null;
+  merchantName?: string | null;
 }
 
 export interface RAGSearchResult {
@@ -48,7 +67,8 @@ export async function indexCall(
   merchantUuid: string | null,
   canvasId: string | null,
   env: Env,
-  logger: Logger
+  logger: Logger,
+  context: VectorMetadataContext = {}
 ): Promise<void> {
   try {
     // Build searchable text from call data
@@ -65,6 +85,26 @@ export async function indexCall(
     }
 
     // Store in Vectorize
+    const metadata: Record<string, any> = {
+      phoneNumber: call.participants[0] || '',
+      timestamp: call.createdAt,
+      notionPageId,
+      type: 'call',
+      direction: call.direction,
+      interactionType: 'call',
+    };
+
+    if (context.canvasId) {
+      metadata.canvasId = context.canvasId;
+    }
+    const merchantUuid = context.merchantUuid ?? context.canvasId;
+    if (merchantUuid) {
+      metadata.merchantUuid = merchantUuid;
+    }
+    if (context.merchantName) {
+      metadata.merchantName = context.merchantName;
+    }
+
     await env.CALL_VECTORS.upsert([
       {
         id: `call:${call.id}`,
@@ -78,6 +118,7 @@ export async function indexCall(
           ...(merchantUuid ? { merchantUuid } : {}),
           ...(canvasId ? { canvasId } : {}),
         },
+        metadata,
       },
     ]);
 
@@ -100,7 +141,8 @@ export async function indexMessage(
   merchantUuid: string | null,
   canvasId: string | null,
   env: Env,
-  logger: Logger
+  logger: Logger,
+  context: VectorMetadataContext = {}
 ): Promise<void> {
   try {
     const searchableText = buildMessageSearchText(message, summary);
@@ -112,6 +154,26 @@ export async function indexMessage(
     if (!embeddings?.data?.[0]) {
       logger.warn('No embeddings generated for message', { messageId: message.id });
       return;
+    }
+
+    const metadata: Record<string, any> = {
+      phoneNumber: message.from,
+      timestamp: message.createdAt,
+      notionPageId,
+      type: 'message',
+      direction: message.direction,
+      interactionType: 'message',
+    };
+
+    if (context.canvasId) {
+      metadata.canvasId = context.canvasId;
+    }
+    const merchantUuid = context.merchantUuid ?? context.canvasId;
+    if (merchantUuid) {
+      metadata.merchantUuid = merchantUuid;
+    }
+    if (context.merchantName) {
+      metadata.merchantName = context.merchantName;
     }
 
     await env.CALL_VECTORS.upsert([
@@ -127,6 +189,7 @@ export async function indexMessage(
           ...(merchantUuid ? { merchantUuid } : {}),
           ...(canvasId ? { canvasId } : {}),
         },
+        metadata,
       },
     ]);
 
@@ -134,6 +197,66 @@ export async function indexMessage(
   } catch (error) {
     logger.error('Failed to index message in Vectorize', {
       messageId: message.id,
+      error: String(error),
+    });
+  }
+}
+
+/**
+ * Index a mail item in Vectorize for semantic search
+ */
+export async function indexMail(
+  mail: Mail,
+  summary: string | undefined,
+  notionPageId: string,
+  env: Env,
+  logger: Logger,
+  context: VectorMetadataContext = {}
+): Promise<void> {
+  try {
+    const searchableText = buildMailSearchText(mail, summary);
+
+    const embeddings = await env.AI.run('@cf/baai/bge-base-en-v1.5', {
+      text: [searchableText],
+    }) as { data: number[][] };
+
+    if (!embeddings?.data?.[0]) {
+      logger.warn('No embeddings generated for mail', { mailId: mail.id });
+      return;
+    }
+
+    const metadata: Record<string, any> = {
+      phoneNumber: mail.from,
+      timestamp: mail.createdAt,
+      notionPageId,
+      type: 'mail',
+      direction: mail.direction,
+      interactionType: 'mail',
+    };
+
+    if (context.canvasId) {
+      metadata.canvasId = context.canvasId;
+    }
+    const merchantUuid = context.merchantUuid ?? context.canvasId;
+    if (merchantUuid) {
+      metadata.merchantUuid = merchantUuid;
+    }
+    if (context.merchantName) {
+      metadata.merchantName = context.merchantName;
+    }
+
+    await env.CALL_VECTORS.upsert([
+      {
+        id: `mail:${mail.id}`,
+        values: embeddings.data[0],
+        metadata,
+      },
+    ]);
+
+    logger.info('Mail indexed in Vectorize', { mailId: mail.id });
+  } catch (error) {
+    logger.error('Failed to index mail in Vectorize', {
+      mailId: mail.id,
       error: String(error),
     });
   }
@@ -210,7 +333,7 @@ export async function semanticSearch(
     return filteredResults.map((match) => ({
       id: match.id,
       score: match.score,
-      metadata: match.metadata as any,
+      metadata: ((match.metadata as unknown) || {}) as VectorMetadata,
     }));
   } catch (error) {
     logger.error('Semantic search failed', { query, error: String(error) });
@@ -257,7 +380,7 @@ export async function findSimilarCalls(
     return similarCalls.map((match) => ({
       id: match.id.replace('call:', ''),
       score: match.score,
-      metadata: match.metadata as any,
+      metadata: ((match.metadata as unknown) || {}) as VectorMetadata,
     }));
   } catch (error) {
     logger.error('Failed to find similar calls', { callId, error: String(error) });
@@ -699,6 +822,25 @@ function buildMessageSearchText(message: Message, summary: string | undefined): 
 
   if (message.text) {
     parts.push(message.text);
+  }
+
+  return parts.join('\n').slice(0, 8000);
+}
+
+function buildMailSearchText(mail: Mail, summary: string | undefined): string {
+  const parts = [
+    `Mail ${mail.direction ?? 'unknown'}`,
+    `From: ${mail.from}`,
+    `To: ${(mail.to ?? []).join(', ')}`,
+    `Subject: ${mail.subject}`,
+  ];
+
+  if (summary) {
+    parts.push(summary);
+  }
+
+  if (mail.body) {
+    parts.push(mail.body);
   }
 
   return parts.join('\n').slice(0, 8000);

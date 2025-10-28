@@ -165,6 +165,8 @@ export interface Mail {
   createdAt: ISO8601DateTime;
   updatedAt: ISO8601DateTime;
   attachments?: MailAttachment[];
+  threadId?: string | null;
+  metadata?: Record<string, any> | null;
 }
 
 export interface MailAttachment {
@@ -242,6 +244,9 @@ export type WebhookEventType =
   | 'message.received'
   | 'message.delivered'
   | 'maintenance.merchant_uuid_backfill';
+  | 'mail.received'
+  | 'mail.delivered'
+  | 'mail.sent';
 
 export interface WebhookEvent<T = any> {
   id: OpenPhoneID<'EV'>;
@@ -262,6 +267,9 @@ export type CallTranscriptCompletedEvent = WebhookEvent<CallTranscript>;
 export type CallSummaryCompletedEvent = WebhookEvent<CallSummary>;
 export type MessageReceivedEvent = WebhookEvent<Message>;
 export type MessageDeliveredEvent = WebhookEvent<Message>;
+export type MailReceivedEvent = WebhookEvent<Mail>;
+export type MailDeliveredEvent = WebhookEvent<Mail>;
+export type MailSentEvent = WebhookEvent<Mail>;
 
 // ============================================================================
 // API Response Types

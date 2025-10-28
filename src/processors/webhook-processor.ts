@@ -1,19 +1,11 @@
-/**
- * Webhook Event Processor
- * Enriches webhook data and syncs to Notion
- */
-
 import type { Env, QueuedWebhookEvent } from '../types/env';
 import type {
   WebhookEvent,
-  CallCompletedEvent,
-  CallRecordingCompletedEvent,
-  CallTranscriptCompletedEvent,
-  CallSummaryCompletedEvent,
-  MessageReceivedEvent,
-  MessageDeliveredEvent,
   Call,
+  CallSummary,
+  CallTranscript,
   Message,
+  Mail,
 } from '../types/openphone';
 import { Logger } from '../utils/logger';
 import { OpenPhoneClient } from '../utils/openphone-client';
@@ -28,10 +20,30 @@ import {
   isRetryableError,
 } from '../utils/helpers';
 import { indexCall, indexMessage } from '../utils/vector-search';
+import {
+  triggerCallWorkflow,
+  triggerMessageWorkflow,
+  triggerMailWorkflow,
+} from '../workflows/trigger';
 
-/**
- * Process a webhook event
- */
+const CALL_EVENT_TYPES = new Set<WebhookEvent['type']>([
+  'call.completed',
+  'call.recording.completed',
+  'call.transcript.completed',
+  'call.summary.completed',
+]);
+
+const MESSAGE_EVENT_TYPES = new Set<WebhookEvent['type']>([
+  'message.received',
+  'message.delivered',
+]);
+
+const MAIL_EVENT_TYPES = new Set<WebhookEvent['type']>([
+  'mail.received',
+  'mail.delivered',
+  'mail.sent',
+]);
+
 export async function processWebhookEvent(
   queuedEvent: QueuedWebhookEvent,
   env: Env,
@@ -223,48 +235,16 @@ async function handleCallCompleted(
   }
 
   try {
-    // Fetch complete call data
-    const completeData = await retry(
-      () => openPhoneClient.getCompleteCall(call.id),
-      { maxAttempts: 3 }
-    );
-
-    // Download and upload recording to R2 if available
-    let recordingUrl: string | undefined;
-    if (completeData.recordings.length > 0 && completeData.recordings[0].url) {
-      const recording = completeData.recordings[0];
-      if (recording.url && recording.status === 'completed') {
-        try {
-          const audioData = await openPhoneClient.downloadAudioFile(recording.url);
-          recordingUrl = await r2Client.uploadRecording(call.id, audioData, {
-            timestamp: call.createdAt,
-            duration: recording.duration || undefined,
-            contentType: recording.type || undefined,
-          });
-          logger.info('Recording uploaded to R2', { callId: call.id, url: recordingUrl });
-        } catch (error) {
-          logger.error('Failed to upload recording to R2', error);
-          // Continue without recording URL
-        }
+    if (CALL_EVENT_TYPES.has(event.type)) {
+      const callId = extractCallId(event);
+      if (!callId) {
+        logger.warn('Unable to determine call ID for event', { eventType: event.type });
+        return;
       }
-    }
 
-    // Download and upload voicemail to R2 if available
-    let voicemailUrl: string | undefined;
-    if (completeData.voicemail && completeData.voicemail.url) {
-      try {
-        const audioData = await openPhoneClient.downloadAudioFile(completeData.voicemail.url);
-        voicemailUrl = await r2Client.uploadVoicemail(call.id, audioData, {
-          timestamp: call.createdAt,
-          duration: completeData.voicemail.duration || undefined,
-          contentType: completeData.voicemail.type || undefined,
-          transcription: completeData.voicemail.transcription || undefined,
-        });
-        logger.info('Voicemail uploaded to R2', { callId: call.id, url: voicemailUrl });
-      } catch (error) {
-        logger.error('Failed to upload voicemail to R2', error);
-        // Continue without voicemail URL
-      }
+      const phoneNumberId = extractCallPhoneNumberId(event);
+      await triggerCallWorkflow(env, logger, { callId, phoneNumberId: phoneNumberId ?? null });
+      return;
     }
 
     // Sync to Notion
@@ -345,38 +325,19 @@ async function handleCallCompleted(
     throw error;
   }
 }
+    if (MESSAGE_EVENT_TYPES.has(event.type)) {
+      const message = event.data.object as Message;
+      await triggerMessageWorkflow(env, logger, {
+        messageId: message.id,
+        phoneNumberId: message.phoneNumberId ?? null,
+      });
+      return;
+    }
 
-/**
- * Handle call.recording.completed event
- */
-async function handleCallRecordingCompleted(
-  event: CallRecordingCompletedEvent,
-  env: Env,
-  logger: Logger,
-  openPhoneClient: OpenPhoneClient,
-  notionClient: NotionClient,
-  r2Client: R2Client
-): Promise<void> {
-  const call = event.data.object;
-  logger.info('Handling call.recording.completed', { callId: call.id });
-
-  // This event fires when a recording is ready
-  // We'll fetch the complete data and update the Notion page
-  try {
-    const completeData = await openPhoneClient.getCompleteCall(call.id);
-
-    // Download and upload recording
-    let recordingUrl: string | undefined;
-    if (completeData.recordings.length > 0 && completeData.recordings[0].url) {
-      const recording = completeData.recordings[0];
-      if (recording.url && recording.status === 'completed') {
-        const audioData = await openPhoneClient.downloadAudioFile(recording.url);
-        recordingUrl = await r2Client.uploadRecording(call.id, audioData, {
-          timestamp: call.createdAt,
-          duration: recording.duration || undefined,
-          contentType: recording.type || undefined,
-        });
-      }
+    if (MAIL_EVENT_TYPES.has(event.type)) {
+      const mail = event.data.object as Mail;
+      await triggerMailWorkflow(env, logger, { mail });
+      return;
     }
 
     // Update or create Notion page
@@ -422,27 +383,15 @@ async function handleCallRecordingCompleted(
     );
 
     await markAsSynced(env.SYNC_STATE, call.id, 'call', notionPageId, merchantUuid, canvasId);
+    logger.warn('Unknown webhook event type received', { eventType: event.type });
   } catch (error) {
-    logger.error('Failed to handle recording.completed', error);
+    logger.error('Error processing webhook event via workflows', error);
     throw error;
   }
 }
 
-/**
- * Handle call.transcript.completed event
- */
-async function handleCallTranscriptCompleted(
-  event: CallTranscriptCompletedEvent,
-  env: Env,
-  logger: Logger,
-  openPhoneClient: OpenPhoneClient,
-  notionClient: NotionClient
-): Promise<void> {
-  const transcript = event.data.object;
-  logger.info('Handling call.transcript.completed', { callId: transcript.callId });
-
-  try {
-    const completeData = await openPhoneClient.getCompleteCall(transcript.callId);
+function extractCallId(event: WebhookEvent): string | null {
+  const object = event.data.object as Call | CallSummary | CallTranscript | { callId?: string };
 
     const existingPageId = await notionClient.callPageExists(transcript.callId);
     let notionPageId: string;
@@ -483,21 +432,9 @@ async function handleCallTranscriptCompleted(
   } catch (error) {
     logger.error('Failed to handle transcript.completed', error);
     throw error;
+  if ('id' in object && typeof object.id === 'string' && event.type !== 'call.summary.completed') {
+    return object.id;
   }
-}
-
-/**
- * Handle call.summary.completed event
- */
-async function handleCallSummaryCompleted(
-  event: CallSummaryCompletedEvent,
-  env: Env,
-  logger: Logger,
-  openPhoneClient: OpenPhoneClient,
-  notionClient: NotionClient
-): Promise<void> {
-  const summary = event.data.object;
-  logger.info('Handling call.summary.completed', { callId: summary.callId });
 
   try {
     const completeData = await openPhoneClient.getCompleteCall(summary.callId);
@@ -630,5 +567,17 @@ async function handleMessage(
       errorMessage: String(error),
     });
     throw error;
+  if ('callId' in object && typeof object.callId === 'string') {
+    return object.callId;
   }
+
+  return null;
+}
+
+function extractCallPhoneNumberId(event: WebhookEvent): string | null {
+  const object = event.data.object as Call | CallSummary | CallTranscript;
+  if ('phoneNumberId' in object && object.phoneNumberId) {
+    return object.phoneNumberId;
+  }
+  return null;
 }

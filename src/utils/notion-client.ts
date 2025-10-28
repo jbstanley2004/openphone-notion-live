@@ -61,8 +61,11 @@ export class NotionClient {
   private readonly merchantUuidProperty = 'Merchant UUID';
   private merchantCanonicalMap: Map<string, MerchantCanonicalRecord> | null = null;
   private canvasMerchantCache: Map<string, CanvasMerchantInfo> = new Map();
+  private logger: Logger;
+  private selfPhoneNumbers: Set<string>;
 
   constructor(env: Env, logger: Logger) {
+    this.logger = logger;
     const notionApiKey = env.NOTION_API_KEY?.trim();
     const callsDatabaseId = env.NOTION_CALLS_DATABASE_ID?.trim();
     const messagesDatabaseId = env.NOTION_MESSAGES_DATABASE_ID?.trim();
@@ -763,6 +766,274 @@ export class NotionClient {
       });
       return null;
     }
+    this.fundingDatabaseId = fundingDatabaseId || undefined;
+    this.batchesDatabaseId = batchesDatabaseId || undefined;
+    this.selfPhoneNumbers = this.parseSelfPhoneNumbers(env.SELF_PHONE_NUMBERS);
+
+    if (this.selfPhoneNumbers.size === 0) {
+      this.logger.info(
+        'SELF_PHONE_NUMBERS not configured; Canvas resolution will not filter out internal numbers'
+      );
+    } else {
+      this.logger.debug('Loaded SELF_PHONE_NUMBERS configuration', {
+        count: this.selfPhoneNumbers.size,
+      });
+    }
+  }
+
+  private normalizeIdentifier(value: unknown): string | null {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const normalized = this.normalizeIdentifier(item);
+        if (normalized) {
+          return normalized;
+        }
+      }
+      return null;
+    }
+
+    if (value === undefined || value === null) {
+      return null;
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    }
+
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+
+    return null;
+  }
+
+  private extractMailConversationId(mail: Mail): string | null {
+    const metadata = (mail.metadata ?? {}) as any;
+    const candidates: unknown[] = [
+      mail.threadId,
+      metadata?.threadId,
+      metadata?.thread_id,
+      metadata?.conversationId,
+      metadata?.conversation_id,
+      metadata?.conversation?.id,
+      metadata?.conversation?.conversationId,
+      metadata?.conversation?.threadId,
+    ];
+
+    for (const candidate of candidates) {
+      const normalized = this.normalizeIdentifier(candidate);
+      if (normalized) {
+        return normalized;
+      }
+    }
+
+    return null;
+  }
+
+  private extractMailMimeMessageId(mail: Mail): string | null {
+    const metadata = (mail.metadata ?? {}) as any;
+    const candidates: unknown[] = [
+      metadata?.mimeMessageId,
+      metadata?.mime_message_id,
+      metadata?.messageId,
+      metadata?.message_id,
+      metadata?.gmailMessageId,
+      metadata?.gmail_message_id,
+    ];
+
+    for (const candidate of candidates) {
+      const normalized = this.normalizeIdentifier(candidate);
+      if (normalized) {
+        return normalized;
+      }
+    }
+
+    const headers = metadata?.headers;
+    if (headers && typeof headers === 'object') {
+      const headerCandidates: unknown[] = [
+        headers['Message-ID'],
+        headers['Message-Id'],
+        headers['message-id'],
+      ];
+
+      for (const candidate of headerCandidates) {
+        const normalized = this.normalizeIdentifier(candidate);
+        if (normalized) {
+          return normalized;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  getCallsDatabaseId(): string {
+    return this.callsDatabaseId;
+  }
+
+  getMessagesDatabaseId(): string {
+    return this.messagesDatabaseId;
+  }
+
+  getCanvasDatabaseId(): string {
+    return this.canvasDatabaseId;
+  }
+
+  getMailDatabaseId(): string {
+    return this.mailDatabaseId;
+  }
+
+  getFundingDatabaseId(required = false): string | null {
+    if (!this.fundingDatabaseId) {
+      if (required) {
+        throw new Error('NOTION_FUNDING_DATABASE_ID is required for this operation');
+      }
+      return null;
+    }
+    return this.fundingDatabaseId;
+  }
+
+  getBatchesDatabaseId(required = false): string | null {
+    if (!this.batchesDatabaseId) {
+      if (required) {
+        throw new Error('NOTION_BATCHES_DATABASE_ID is required for this operation');
+      }
+      return null;
+    }
+    return this.batchesDatabaseId;
+  }
+
+  /**
+   * Retrieve a Notion page by ID
+   */
+  async getPage(pageId: string): Promise<any | null> {
+    try {
+      return await this.client.pages.retrieve({ page_id: pageId });
+    } catch (error) {
+      this.logger.error('Failed to retrieve Notion page', error);
+      return null;
+    }
+  }
+
+  /**
+   * Query a database with optional filters, sorts, and pagination
+   */
+  async queryDatabase(
+    databaseId: string,
+    options: { filter?: any; sorts?: any; pageSize?: number; startCursor?: string } = {}
+  ): Promise<any> {
+    try {
+      return await this.client.databases.query({
+        database_id: databaseId,
+        filter: options.filter,
+        sorts: options.sorts,
+        page_size: options.pageSize,
+        start_cursor: options.startCursor,
+      });
+    } catch (error) {
+      this.logger.error('Failed to query Notion database', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Resolve Canvas relation for a call
+   */
+  async resolveCanvasForCall(call: Call): Promise<string | null> {
+    const otherParticipants = call.participants.filter(
+      (participant) => !this.isSelfPhoneNumber(participant)
+    );
+
+    if (otherParticipants.length !== call.participants.length) {
+      const skippedParticipants = call.participants.filter((participant) =>
+        this.isSelfPhoneNumber(participant)
+      );
+      this.logger.debug('Skipping Canvas lookup for internal phone numbers', {
+        skippedParticipants,
+      });
+    }
+
+    this.logger.info('Resolving Canvas for call participants', {
+      callId: call.id,
+      direction: call.direction,
+      participants: otherParticipants,
+    });
+
+    for (const participant of otherParticipants) {
+      const found = await this.findCanvasByPhone(participant);
+      if (found) {
+        this.logger.info('Found Canvas for call participant', {
+          participant,
+          canvasId: found,
+          direction: call.direction,
+        });
+        return found;
+      }
+    }
+
+    this.logger.warn('No Canvas match found for call', {
+      callId: call.id,
+      participants: otherParticipants,
+    });
+    return null;
+  }
+
+  /**
+   * Resolve Canvas relation for a message
+   */
+  async resolveCanvasForMessage(message: Message): Promise<string | null> {
+    const phoneToLookup = message.direction === 'incoming'
+      ? message.from
+      : (message.to[0] || null);
+
+    if (!phoneToLookup) {
+      this.logger.warn('No phone number available to resolve message Canvas', {
+        messageId: message.id,
+        direction: message.direction,
+      });
+      return null;
+    }
+
+    if (this.isSelfPhoneNumber(phoneToLookup)) {
+      this.logger.warn('Skipping Canvas lookup for configured internal phone number', {
+        phoneNumber: phoneToLookup,
+      });
+      return null;
+    }
+
+    const canvasId = await this.findCanvasByPhone(phoneToLookup);
+    if (!canvasId) {
+      this.logger.warn('No Canvas match found for message phone number', {
+        phoneNumber: phoneToLookup,
+        direction: message.direction,
+      });
+    }
+
+    return canvasId;
+  }
+
+  /**
+   * Resolve Canvas relation for mail
+   */
+  async resolveCanvasForMail(mail: { direction?: string | null; from?: string | null; to?: string[] | null }): Promise<string | null> {
+    const emailToLookup = mail.direction === 'incoming'
+      ? mail.from
+      : (mail.to?.[0] ?? null);
+
+    if (!emailToLookup) {
+      this.logger.warn('No email address available to resolve mail Canvas');
+      return null;
+    }
+
+    const canvasId = await this.findCanvasByEmail(emailToLookup);
+    if (!canvasId) {
+      this.logger.warn('No Canvas match found for email address', {
+        email: emailToLookup,
+      });
+    }
+
+    return canvasId;
   }
 
   // ========================================================================
@@ -831,6 +1102,7 @@ export class NotionClient {
         direction: call.direction,
       });
     }
+    const canvasId = await this.resolveCanvasForCall(call);
 
     // Format transcript dialogue
     const transcriptText = transcript?.dialogue
@@ -1056,33 +1328,7 @@ export class NotionClient {
   async createMessagePage(message: Message): Promise<{ pageId: string; canvasId: string | null; merchantUuid: string | null }> {
     this.logger.info('Creating message page in Notion', { messageId: message.id });
 
-    // Find Canvas relation by phone number
-    // For incoming messages, use the "from" number (sender)
-    // For outgoing messages, use the "to" number (recipient)
-    let canvasId: string | null = null;
-
-    const MY_PHONE_NUMBER = '+13365185544';
-    const phoneToLookup = message.direction === 'incoming'
-      ? message.from
-      : (message.to[0] || null);
-
-    // Safety check: ensure we're not looking up our own number
-    if (phoneToLookup) {
-      const normalized = phoneToLookup.replace(/\D/g, '');
-      const myNormalized = MY_PHONE_NUMBER.replace(/\D/g, '');
-
-      if (normalized !== myNormalized) {
-        this.logger.info('Looking up Canvas for message', {
-          direction: message.direction,
-          phoneNumber: phoneToLookup,
-        });
-        canvasId = await this.findCanvasByPhone(phoneToLookup);
-      } else {
-        this.logger.warn('Skipping Canvas lookup - phone number is my own', {
-          phoneNumber: phoneToLookup,
-        });
-      }
-    }
+    const canvasId = await this.resolveCanvasForMessage(message);
 
     const merchantUuid = await this.resolveMerchantUuidForCanvas(canvasId);
 
@@ -1174,28 +1420,27 @@ export class NotionClient {
   async createMailPage(mail: Mail): Promise<{ pageId: string; canvasId: string | null; merchantUuid: string | null }> {
     this.logger.info('Creating mail page in Notion', { mailId: mail.id });
 
-    // Find Canvas relation by email address
-    // For incoming mail, use the "from" email
-    // For outgoing mail, use the first "to" email
-    let canvasId: string | null = null;
+    const canvasId = await this.resolveCanvasForMail({
+      direction: mail.direction,
+      from: mail.from,
+      to: mail.to,
+    });
 
-    const emailToLookup = mail.direction === 'incoming'
-      ? mail.from
-      : (mail.to[0] || null);
-
-    if (emailToLookup) {
-      canvasId = await this.findCanvasByEmail(emailToLookup);
-    }
+    const conversationId = this.extractMailConversationId(mail);
+    const mimeMessageId = this.extractMailMimeMessageId(mail);
 
     const merchantUuid = await this.resolveMerchantUuidForCanvas(canvasId);
 
     const properties = {
       'Subject': createTitle(mail.subject || '(No Subject)'),
+      'Message ID': createRichText(mail.id),
       'From': createEmail(mail.from),
       'To': createRichText(mail.to.join(', ')),
       'CC': createRichText(mail.cc?.join(', ') || ''),
       'BCC': createRichText(mail.bcc?.join(', ') || ''),
       'Body': createRichText(mail.body),
+      'Conversation ID': createRichText(conversationId ?? ''),
+      'MIME Message ID': createRichText(mimeMessageId ?? ''),
       'Direction': createSelect(mail.direction),
       'Status': createSelect(mail.status),
       'Created At': createDate(mail.createdAt),
@@ -1244,6 +1489,8 @@ export class NotionClient {
       ? await this.findCanvasByEmail(mail.from)
       : await this.findCanvasByEmail(mail.to[0] || '');
     const merchantUuid = await this.resolveMerchantUuidForCanvas(canvasId);
+    const conversationId = this.extractMailConversationId(mail);
+    const mimeMessageId = this.extractMailMimeMessageId(mail);
 
     const properties = {
       'Status': createSelect(mail.status),
@@ -1251,6 +1498,9 @@ export class NotionClient {
       'Body': createRichText(mail.body),
       'Canvas': createRelation(canvasId ? [canvasId] : []),
       'Merchant UUID': createRichText(merchantUuid || ''),
+      'Message ID': createRichText(mail.id),
+      'Conversation ID': createRichText(conversationId ?? ''),
+      'MIME Message ID': createRichText(mimeMessageId ?? ''),
     };
 
     try {
@@ -1277,17 +1527,25 @@ export class NotionClient {
   async findPageByResourceId(
     databaseId: string,
     resourceId: string,
-    titleProperty: string = 'Call ID'
+    titleProperty: string = 'Call ID',
+    propertyType: 'title' | 'rich_text' = 'title'
   ): Promise<string | null> {
     try {
+      const filter: any = { property: titleProperty };
+
+      if (propertyType === 'rich_text') {
+        filter.rich_text = {
+          equals: resourceId,
+        };
+      } else {
+        filter.title = {
+          equals: resourceId,
+        };
+      }
+
       const response = await this.client.databases.query({
         database_id: databaseId,
-        filter: {
-          property: titleProperty,
-          title: {
-            equals: resourceId,
-          },
-        },
+        filter,
       });
 
       if (response.results.length > 0) {
@@ -1339,7 +1597,7 @@ export class NotionClient {
    * Check if a mail page exists
    */
   async mailPageExists(mailId: string): Promise<string | null> {
-    return this.findPageByResourceId(this.mailDatabaseId, mailId, 'Subject');
+    return this.findPageByResourceId(this.mailDatabaseId, mailId, 'Message ID', 'rich_text');
   }
 
   // ========================================================================
@@ -1560,6 +1818,13 @@ export class NotionClient {
           title && typeof title === 'object' && 'title' in title && Array.isArray((title as any).title)
             ? (title as any).title.map((t: any) => t.plain_text).join('')
             : '';
+        const titleSegments =
+          title && typeof title === 'object' && title !== null && 'title' in (title as any)
+            ? (title as any).title
+            : [];
+        const titleText = Array.isArray(titleSegments)
+          ? titleSegments.map((t: any) => t.plain_text).join('')
+          : '';
 
         let phoneValue = null;
         let phoneType = null;
@@ -1604,5 +1869,82 @@ export class NotionClient {
     }
 
     return result;
+  }
+
+  private parseSelfPhoneNumbers(rawValue?: string): Set<string> {
+    const normalizedNumbers = new Set<string>();
+
+    if (!rawValue) {
+      return normalizedNumbers;
+    }
+
+    const trimmed = rawValue.trim();
+    if (!trimmed) {
+      return normalizedNumbers;
+    }
+
+    let entries: string[] = [];
+
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          entries = parsed
+            .map((value) => (typeof value === 'string' ? value : value != null ? String(value) : ''))
+            .filter((value) => value.trim().length > 0);
+        } else {
+          this.logger.warn('SELF_PHONE_NUMBERS JSON value is not an array; falling back to comma parsing');
+        }
+      } catch (error) {
+        this.logger.warn('Failed to parse SELF_PHONE_NUMBERS as JSON array; falling back to comma parsing', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (entries.length === 0) {
+      entries = trimmed
+        .split(/[\n,]/)
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0);
+    }
+
+    for (const entry of entries) {
+      const variants = this.normalizePhoneNumberVariants(entry);
+      for (const variant of variants) {
+        normalizedNumbers.add(variant);
+      }
+    }
+
+    return normalizedNumbers;
+  }
+
+  private normalizePhoneNumberVariants(phoneNumber: string): string[] {
+    if (!phoneNumber) {
+      return [];
+    }
+
+    const digitsOnly = phoneNumber.replace(/\D/g, '');
+    if (!digitsOnly) {
+      return [];
+    }
+
+    const variants = new Set<string>();
+    variants.add(digitsOnly);
+
+    if (digitsOnly.length === 11 && digitsOnly.startsWith('1')) {
+      variants.add(digitsOnly.substring(1));
+    }
+
+    return Array.from(variants);
+  }
+
+  private isSelfPhoneNumber(phoneNumber?: string | null): boolean {
+    if (!phoneNumber || this.selfPhoneNumbers.size === 0) {
+      return false;
+    }
+
+    const variants = this.normalizePhoneNumberVariants(phoneNumber);
+    return variants.some((variant) => this.selfPhoneNumbers.has(variant));
   }
 }

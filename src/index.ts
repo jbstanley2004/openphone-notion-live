@@ -9,16 +9,20 @@
  * - Cron: Periodic backfill and health checks
  */
 
+import type { D1PreparedStatement, D1Result } from '@cloudflare/workers-types';
 import type { Env, QueuedWebhookEvent } from './types/env';
 import type { WebhookEvent } from './types/openphone';
 import { createLogger } from './utils/logger';
 import { isEventProcessed, markEventProcessed } from './utils/helpers';
+import { invalidateCanvasMapping, normalizeCanvasLookup, type CanvasLookupType } from './utils/canvas-cache';
 
 // Export Durable Object
 export { PhoneNumberSync } from './durable-objects/phone-number-sync';
 
-// Export Workflow
+// Export Workflows
 export { CallProcessingWorkflow } from './workflows/call-processing';
+export { MessageProcessingWorkflow } from './workflows/message-processing';
+export { MailProcessingWorkflow } from './workflows/mail-processing';
 
 export default {
   /**
@@ -131,6 +135,10 @@ export default {
       // Dashboard API - Cache stats endpoint
       if (url.pathname === '/api/cache' && request.method === 'GET') {
         return await handleCacheAPI(env, logger);
+      }
+
+      if (url.pathname === '/api/canvas/cache/invalidate' && request.method === 'POST') {
+        return await handleCanvasCacheInvalidateAPI(request, env, logger);
       }
 
       // Webhook endpoint
@@ -258,14 +266,27 @@ async function handleWebhook(
     }
 
     // Check for duplicate events
+    const kvLookupKey = `event:${payload.id}`;
+    const kvLookupStart = Date.now();
     const isDuplicate = await isEventProcessed(env.SYNC_STATE, payload.id);
+    logger.logKVOperation('SYNC_STATE', 'get', {
+      key: kvLookupKey,
+      hit: isDuplicate,
+      durationMs: Date.now() - kvLookupStart,
+    });
+
     if (isDuplicate) {
       logger.info('Duplicate webhook event, ignoring', { eventId: payload.id });
       return new Response('OK (duplicate)', { status: 200 });
     }
 
     // Mark event as received
+    const kvMarkStart = Date.now();
     await markEventProcessed(env.SYNC_STATE, payload.id);
+    logger.logKVOperation('SYNC_STATE', 'put', {
+      key: kvLookupKey,
+      durationMs: Date.now() - kvMarkStart,
+    });
 
     // Queue the event for processing
     const queuedEvent: QueuedWebhookEvent = {
@@ -276,7 +297,19 @@ async function handleWebhook(
       retryCount: 0,
     };
 
-    await env.WEBHOOK_EVENTS.send(queuedEvent);
+    const enqueueTimer = logger.startTimer('queue.enqueue', {
+      binding: 'WEBHOOK_EVENTS',
+      queue: 'openphone-webhook-events',
+      eventId: payload.id,
+    });
+
+    try {
+      await env.WEBHOOK_EVENTS.send(queuedEvent);
+      enqueueTimer('success');
+    } catch (error) {
+      enqueueTimer('error', {}, error);
+      throw error;
+    }
 
     logger.info('Webhook queued for processing', { eventId: payload.id });
 
@@ -304,22 +337,87 @@ async function handleStatsAPI(
   logger: typeof createLogger extends (...args: any[]) => infer R ? R : never
 ): Promise<Response> {
   try {
+    async function runQuery<T>(
+      operation: string,
+      query: string,
+      mode: 'first',
+      binder?: (statement: D1PreparedStatement) => D1PreparedStatement
+    ): Promise<T | null>;
+    async function runQuery<T>(
+      operation: string,
+      query: string,
+      mode: 'all',
+      binder?: (statement: D1PreparedStatement) => D1PreparedStatement
+    ): Promise<D1Result<T>>;
+    async function runQuery<T>(
+      operation: string,
+      query: string,
+      mode: 'first' | 'all',
+      binder?: (statement: D1PreparedStatement) => D1PreparedStatement
+    ): Promise<T | null | D1Result<T>> {
+      const started = Date.now();
+
+      try {
+        let statement = env.DB.prepare(query);
+        if (binder) {
+          statement = binder(statement);
+        }
+
+        if (mode === 'first') {
+          const result = await statement.first<T>();
+
+          logger.logD1Query(operation, Date.now() - started, 'success', {
+            mode,
+            rows: result ? 1 : 0,
+          });
+
+          return result;
+        }
+
+        const result = await statement.all<T>();
+        const rows = result.results.length;
+
+        logger.logD1Query(operation, Date.now() - started, 'success', {
+          mode,
+          rows,
+        });
+
+        return result;
+      } catch (error) {
+        logger.logD1Query(operation, Date.now() - started, 'error', {
+          mode,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    }
+
     // Query D1 for statistics
-    const callsResult = await env.DB.prepare(
-      'SELECT COUNT(*) as count FROM sync_history WHERE resource_type = ?'
-    ).bind('call').first();
+    const callsResult = await runQuery<{ count: number }>(
+      'sync_history.count_calls',
+      'SELECT COUNT(*) as count FROM sync_history WHERE resource_type = ?',
+      'first',
+      (statement) => statement.bind('call')
+    );
 
-    const messagesResult = await env.DB.prepare(
-      'SELECT COUNT(*) as count FROM sync_history WHERE resource_type = ?'
-    ).bind('message').first();
+    const messagesResult = await runQuery<{ count: number }>(
+      'sync_history.count_messages',
+      'SELECT COUNT(*) as count FROM sync_history WHERE resource_type = ?',
+      'first',
+      (statement) => statement.bind('message')
+    );
 
-    const cacheResult = await env.DB.prepare(
-      'SELECT COUNT(*) as count, AVG(hit_count) as avg_hits FROM canvas_cache'
-    ).first();
+    const cacheResult = await runQuery<{ count: number; avg_hits: number | null }>(
+      'canvas_cache.summary',
+      'SELECT COUNT(*) as count, AVG(hit_count) as avg_hits FROM canvas_cache',
+      'first'
+    );
 
-    const recentActivity = await env.DB.prepare(
-      'SELECT * FROM sync_history ORDER BY synced_at DESC LIMIT 10'
-    ).all();
+    const recentActivity = await runQuery<any>(
+      'sync_history.recent_activity',
+      'SELECT * FROM sync_history ORDER BY synced_at DESC LIMIT 10',
+      'all'
+    );
 
     const stats = {
       totalCalls: callsResult?.count || 0,
@@ -340,6 +438,55 @@ async function handleStatsAPI(
   } catch (error) {
     logger.error('Failed to fetch stats', error);
     return new Response(JSON.stringify({ error: 'Failed to fetch stats' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+async function handleCanvasCacheInvalidateAPI(
+  request: Request,
+  env: Env,
+  logger: typeof createLogger extends (...args: any[]) => infer R ? R : never
+): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      lookup: string;
+      type: CanvasLookupType;
+      reason?: string;
+    };
+
+    if (!body.lookup || (body.type !== 'phone' && body.type !== 'email')) {
+      return new Response(JSON.stringify({ error: 'lookup and type (phone|email) are required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const normalized = normalizeCanvasLookup(body.type, body.lookup);
+    if (!normalized) {
+      return new Response(JSON.stringify({ error: 'Lookup normalized to empty value' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    await invalidateCanvasMapping(env, logger, body.type, body.lookup, body.reason);
+
+    return new Response(
+      JSON.stringify({
+        status: 'invalidated',
+        lookup: normalized,
+        type: body.type,
+        reason: body.reason || null,
+      }),
+      {
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+  } catch (error) {
+    logger.error('Failed to invalidate Canvas cache entry', error);
+    return new Response(JSON.stringify({ error: 'Failed to invalidate Canvas cache entry' }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });

@@ -13,12 +13,42 @@
 
 import type { DurableObjectState } from '@cloudflare/workers-types';
 import type { Env } from '../types/env';
-import type { Call, Message } from '../types/openphone';
 import { Logger, createLogger } from '../utils/logger';
 import { OpenPhoneClient } from '../utils/openphone-client';
 import { NotionClient } from '../utils/notion-client';
 import { R2Client } from '../utils/r2-client';
 import { RateLimiter } from '../utils/rate-limiter';
+import {
+  buildCanvasCacheKey,
+  buildCanvasKVKey,
+  normalizeCanvasLookup,
+  type CanvasLookupType,
+  type CanvasCacheKVValue,
+} from '../utils/canvas-cache';
+import {
+  triggerCallWorkflow,
+  triggerMessageWorkflow,
+  triggerMailWorkflow,
+} from '../workflows/trigger';
+import type { WebhookEvent, Call, CallSummary, CallTranscript, Message, Mail } from '../types/openphone';
+
+const DO_CALL_EVENTS = new Set<WebhookEvent['type']>([
+  'call.completed',
+  'call.recording.completed',
+  'call.transcript.completed',
+  'call.summary.completed',
+]);
+
+const DO_MESSAGE_EVENTS = new Set<WebhookEvent['type']>([
+  'message.received',
+  'message.delivered',
+]);
+
+const DO_MAIL_EVENTS = new Set<WebhookEvent['type']>([
+  'mail.received',
+  'mail.delivered',
+  'mail.sent',
+]);
 
 type CanvasLookupType = 'phone' | 'email';
 
@@ -51,6 +81,20 @@ interface PhoneNumberState {
   canvasCache: Record<string, CanvasCacheEntry>; // phone/email -> canvas metadata
   totalCallsSynced: number;
   totalMessagesSynced: number;
+}
+
+function extractDoCallId(event: WebhookEvent): string | null {
+  const object = event.data.object as Call | CallSummary | CallTranscript | { callId?: string };
+
+  if ('id' in object && typeof object.id === 'string' && event.type !== 'call.summary.completed') {
+    return object.id;
+  }
+
+  if ('callId' in object && typeof object.callId === 'string') {
+    return object.callId;
+  }
+
+  return null;
 }
 
 export class PhoneNumberSync {
@@ -107,6 +151,25 @@ export class PhoneNumberSync {
         ...stored,
         canvasCache: normalizedCache,
       };
+      // Normalize existing cache keys to the new format (type:normalizedLookup)
+      const normalizedCache: Record<string, string> = {};
+      for (const [key, value] of Object.entries(stored.canvasCache || {})) {
+        if (!key.includes(':')) {
+          continue;
+        }
+        const [rawType, ...rest] = key.split(':');
+        const type = (rawType as CanvasLookupType) || 'phone';
+        const originalLookup = rest.join(':');
+        const normalizedLookup = normalizeCanvasLookup(type, originalLookup);
+        if (!normalizedLookup) {
+          continue;
+        }
+        const normalizedKey = buildCanvasCacheKey(type, normalizedLookup);
+        normalizedCache[normalizedKey] = value;
+      }
+
+      stored.canvasCache = normalizedCache;
+      this.state = stored;
       this.logger = this.logger.withContext({ phoneNumberId: this.state.phoneNumberId });
       this.logger.info('Loaded state from durable storage', {
         lastCallSync: new Date(this.state.lastCallSync).toISOString(),
@@ -188,12 +251,71 @@ export class PhoneNumberSync {
 
       // Update D1 cache stats (async, don't wait)
       this.ctx.waitUntil(this.updateCanvasCacheHit(normalizedLookup, type));
+  private async getCanvasId(lookup: string, type: CanvasLookupType, notionClient: NotionClient): Promise<string | null> {
+    if (!this.state) return null;
+
+    const normalizedLookup = normalizeCanvasLookup(type, lookup);
+    if (!normalizedLookup) {
+      this.logger.warn('Skipping Canvas lookup - normalized lookup empty', { lookup, type });
+      return null;
+    }
+
+    const cacheKey = buildCanvasCacheKey(type, normalizedLookup);
+    const kvKey = buildCanvasKVKey(type, normalizedLookup);
+
+    // Check KV cache first (shared across workers)
+    try {
+      const kvValue = await this.env.CACHE.get(kvKey);
+      if (kvValue) {
+        const parsed = JSON.parse(kvValue) as CanvasCacheKVValue;
+        if (parsed?.canvasId) {
+          this.logger.info('Canvas cache hit (KV)', {
+            lookup: normalizedLookup,
+            type,
+            canvasId: parsed.canvasId,
+            version: parsed.version,
+          });
+
+          this.state.canvasCache[cacheKey] = parsed.canvasId;
+          await this.saveState();
+
+          this.ctx.waitUntil(
+            this.logCanvasCache(normalizedLookup, type, parsed.canvasId, {
+              source: 'kv',
+            })
+          );
+
+          return parsed.canvasId;
+        }
+      }
+    } catch (error) {
+      this.logger.error('Failed to read Canvas cache from KV', {
+        error: String(error),
+        lookup: normalizedLookup,
+        type,
+      });
+    }
+
+    // Check in-memory DO state cache
+    if (this.state.canvasCache[cacheKey]) {
+      this.logger.info('Canvas cache hit (DO state)', {
+        lookup: normalizedLookup,
+        type,
+        canvasId: this.state.canvasCache[cacheKey],
+      });
+
+      this.ctx.waitUntil(
+        this.logCanvasCache(normalizedLookup, type, this.state.canvasCache[cacheKey], {
+          source: 'do_state',
+        })
+      );
 
       return cachedEntry;
     }
 
     // Cache miss - query Notion
     this.logger.info('Canvas cache miss, querying Notion', { lookup, normalizedLookup, type });
+    this.logger.info('Canvas cache miss, querying Notion', { lookup: normalizedLookup, type });
     const startTime = Date.now();
 
     let canvasId: string | null = null;
@@ -214,6 +336,8 @@ export class PhoneNumberSync {
 
       // Cache the result
       this.state.canvasCache[cacheKey] = cacheEntry;
+      // Cache the result in DO state
+      this.state.canvasCache[cacheKey] = canvasId;
       await this.saveState();
 
       // Log to D1 (async)
@@ -224,6 +348,10 @@ export class PhoneNumberSync {
         this.logPerformanceMetric('canvas_lookup', type, duration, true)
       );
       return cacheEntry;
+        this.logCanvasCache(normalizedLookup, type, canvasId, {
+          source: 'notion',
+        })
+      );
     }
 
     // Log performance metric
@@ -250,7 +378,11 @@ export class PhoneNumberSync {
       const rateLimiter = new RateLimiter(env.RATE_LIMITS, this.logger);
       const openPhoneClient = new OpenPhoneClient(env, this.logger, rateLimiter);
       const notionClient = new NotionClient(env, this.logger);
-      const r2Client = new R2Client(env.RECORDINGS_BUCKET, this.logger);
+      const r2Client = new R2Client(
+        env.RECORDINGS_BUCKET,
+        this.logger,
+        env.RECORDINGS_PUBLIC_BASE_URL
+      );
 
       // Fetch only NEW calls since last sync
       const since = new Date(this.state.lastCallSync).toISOString();
@@ -449,10 +581,55 @@ export class PhoneNumberSync {
   /**
    * Handle webhook event for this phone number
    */
-  async handleWebhook(event: any, env: Env): Promise<void> {
-    // Process webhook in real-time
-    // Use cached Canvas lookups
-    // TODO: Implement webhook handling
+  async handleWebhook(rawEvent: any, env: Env): Promise<void> {
+    const event = rawEvent as WebhookEvent;
+    const logger = this.logger.withContext({ eventId: event.id, eventType: event.type });
+
+    logger.info('Durable object handling webhook', { eventType: event.type });
+
+    try {
+      if (DO_CALL_EVENTS.has(event.type)) {
+        const callId = extractDoCallId(event);
+        if (!callId) {
+          logger.warn('Unable to resolve call ID for DO webhook', { eventType: event.type });
+          return;
+        }
+
+        await triggerCallWorkflow(env, logger, {
+          callId,
+          phoneNumberId: this.state?.phoneNumberId ?? null,
+        });
+        return;
+      }
+
+      if (DO_MESSAGE_EVENTS.has(event.type)) {
+        const message = event.data.object as Message;
+        if (!message || message.phoneNumberId !== this.state?.phoneNumberId) {
+          logger.debug('Skipping message event for different phone number', {
+            phoneNumberId: this.state?.phoneNumberId,
+            eventPhoneNumberId: message?.phoneNumberId ?? null,
+          });
+          return;
+        }
+
+        await triggerMessageWorkflow(env, logger, {
+          messageId: message.id,
+          phoneNumberId: message.phoneNumberId ?? null,
+        });
+        return;
+      }
+
+      if (DO_MAIL_EVENTS.has(event.type)) {
+        const mail = event.data.object as Mail;
+        await triggerMailWorkflow(env, logger, { mail });
+        return;
+      }
+
+      logger.warn('Durable object received unhandled webhook type', { eventType: event.type });
+    } catch (error) {
+      logger.error('Durable object workflow trigger failed', error);
+      throw error;
+    }
   }
 
   // ========================================================================
@@ -504,12 +681,98 @@ export class PhoneNumberSync {
   }
 
   private async updateCanvasCacheHit(lookup: string, type: CanvasLookupType): Promise<void> {
+    canvasId: string,
+    metadata: { source: string; canvasName?: string } = { source: 'notion' }
+  ): Promise<void> {
+    const now = Date.now();
+
     try {
-      await this.env.DB.prepare(
-        `UPDATE canvas_cache SET hit_count = hit_count + 1, last_used_at = ? WHERE lookup_key = ?`
-      ).bind(Date.now(), lookup).run();
+      const existing = await this.env.DB.prepare(
+        `SELECT canvas_id, version, hit_count, kv_version, kv_written_at, kv_ttl, kv_expires_at
+           FROM canvas_cache
+          WHERE lookup_key = ?`
+      ).bind(normalizedLookup).first<{
+        canvas_id: string;
+        version: number | null;
+        hit_count: number | null;
+        kv_version: number | null;
+        kv_written_at: number | null;
+        kv_ttl: number | null;
+        kv_expires_at: number | null;
+      }>();
+
+      if (existing) {
+        const currentVersion = existing.version ?? 1;
+        const version = existing.canvas_id === canvasId ? currentVersion : currentVersion + 1;
+        const hitCount = (existing.hit_count ?? 0) + 1;
+
+        await this.env.DB.prepare(
+          `UPDATE canvas_cache
+              SET lookup_type = ?,
+                  canvas_id = ?,
+                  canvas_name = ?,
+                  cached_at = ?,
+                  hit_count = ?,
+                  last_used_at = ?,
+                  source = ?,
+                  version = ?,
+                  last_verified_at = ?,
+                  invalidated_at = NULL
+            WHERE lookup_key = ?`
+        )
+          .bind(
+            type,
+            canvasId,
+            metadata.canvasName ?? null,
+            now,
+            hitCount,
+            now,
+            metadata.source,
+            version,
+            now,
+            normalizedLookup
+          )
+          .run();
+      } else {
+        await this.env.DB.prepare(
+          `INSERT INTO canvas_cache (
+              lookup_key,
+              lookup_type,
+              canvas_id,
+              canvas_name,
+              cached_at,
+              hit_count,
+              last_used_at,
+              source,
+              version,
+              last_verified_at,
+              kv_version,
+              kv_written_at,
+              kv_ttl,
+              kv_expires_at,
+              invalidated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL)`
+        )
+          .bind(
+            normalizedLookup,
+            type,
+            canvasId,
+            metadata.canvasName ?? null,
+            now,
+            1,
+            now,
+            metadata.source,
+            1,
+            now
+          )
+          .run();
+      }
     } catch (error) {
-      this.logger.error('Failed to update canvas cache hit', { error: String(error) });
+      this.logger.error('Failed to log canvas cache event', {
+        error: String(error),
+        lookup: normalizedLookup,
+        type,
+      });
     }
   }
 

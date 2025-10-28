@@ -10,6 +10,7 @@
  */
 
 import type { Env } from '../types/env';
+import type { Call, Message } from '../types/openphone';
 import { Logger } from '../utils/logger';
 import { OpenPhoneClient } from '../utils/openphone-client';
 import { NotionClient } from '../utils/notion-client';
@@ -19,6 +20,9 @@ import { analyzeCallWithAI, analyzeMessageWithAI } from './ai-processor';
 import { indexCall, indexMessage } from '../utils/vector-search';
 import { getCachedCanvas } from '../utils/smart-cache';
 import { getSyncState, markAsSynced, markAsFailed, sleep } from '../utils/helpers';
+import { syncCallToD1, syncMessageToD1, syncMailToD1, MailSyncInput } from '../utils/d1-ingestion';
+import { upsertMerchantFromCanvasPage } from '../utils/d1-merchants';
+import { resolveMerchantMetadata } from '../utils/merchant-metadata';
 
 interface BackfillStats {
   calls: { synced: number; failed: number; skipped: number };
@@ -33,6 +37,8 @@ interface BackfillOptions {
   includeVectorize?: boolean; // Include vectorization (default: true)
   reconcileCanvas?: boolean; // Reconcile Canvas relations (default: true)
   batchSize?: number; // Process in batches (default: 10)
+  reindexVectorize?: boolean; // Reindex historical vectors with metadata (default: includeVectorize)
+  reindexLimit?: number; // Limit number of interactions to reindex
 }
 
 interface BackfillSyncRecord {
@@ -114,6 +120,8 @@ export async function runComprehensiveBackfill(
     includeVectorize = true,
     reconcileCanvas = true,
     batchSize = 10,
+    reindexVectorize = includeVectorize,
+    reindexLimit,
   } = options;
 
   logger.info('Starting comprehensive backfill', {
@@ -171,6 +179,13 @@ export async function runComprehensiveBackfill(
       await reconcileCanvasRelations(env, logger);
     }
 
+    if (includeVectorize && reindexVectorize) {
+      logger.info('Step 6: Reindexing vector metadata for historical interactions');
+      await reindexVectorMetadata(env, logger, {
+        limit: reindexLimit,
+      });
+    }
+
     logger.info('Comprehensive backfill completed', stats);
     return stats;
   } catch (error) {
@@ -191,10 +206,37 @@ async function backfillCanvasDatabase(env: Env, logger: Logger) {
   let skipped = 0;
 
   try {
-    // Query all Canvas pages to ensure they're indexed properly
-    // This creates a baseline for Canvas lookups
-    logger.info('Canvas database is source of truth - no backfill needed');
-    logger.info('Canvas records are used for relation matching');
+    let startCursor: string | undefined = undefined;
+
+    do {
+      const response = await notionClient.queryDatabase(env.NOTION_CANVAS_DATABASE_ID, {
+        pageSize: 50,
+        startCursor,
+      });
+
+      const pages = Array.isArray(response.results) ? response.results : [];
+
+      for (const page of pages) {
+        try {
+          await upsertMerchantFromCanvasPage(env, logger, page);
+          synced++;
+        } catch (error) {
+          failed++;
+          logger.error('Failed to upsert Canvas page into D1', {
+            canvasId: page?.id,
+            error,
+          });
+        }
+      }
+
+      startCursor = response.next_cursor ?? undefined;
+
+      if (!response.has_more) {
+        break;
+      }
+    } while (startCursor);
+
+    logger.info('Canvas backfill completed', { synced, failed, skipped });
 
     return { synced, failed, skipped };
   } catch (error) {
@@ -219,7 +261,7 @@ async function backfillCallsDatabase(
   const rateLimiter = new RateLimiter(env.RATE_LIMITS, logger);
   const openPhoneClient = new OpenPhoneClient(env, logger, rateLimiter);
   const notionClient = new NotionClient(env, logger);
-  const r2Client = new R2Client(env.RECORDINGS_BUCKET, logger);
+  const r2Client = new R2Client(env.RECORDINGS_BUCKET, logger, env.RECORDINGS_PUBLIC_BASE_URL);
 
   let synced = 0;
   let failed = 0;
@@ -305,7 +347,7 @@ async function backfillCallsDatabase(
                 // AI Analysis (if enabled)
                 let aiAnalysis = null;
                 if (includeAI) {
-                  aiAnalysis = await analyzeCallWithAI(call, transcript, env, logger);
+                  aiAnalysis = await analyzeCallWithAI(call, transcript ?? undefined, env, logger);
                   logger.info('AI analysis completed', {
                     callId: call.id,
                     sentiment: aiAnalysis.sentiment.label,
@@ -387,15 +429,27 @@ async function backfillCallsDatabase(
 
                 // Vectorize (if enabled)
                 if (includeVectorize) {
+                  const merchantMetadata = canvasId
+                    ? await resolveMerchantMetadata(env, logger, {
+                        canvasId,
+                        notionClient,
+                      })
+                    : { canvasId: null, merchantUuid: null, merchantName: null };
+
                   await indexCall(
                     call,
-                    transcript,
+                    transcript ?? undefined,
                     aiAnalysis?.summary,
                     notionPageId,
                     merchantUuid,
                     canvasIdForLog || null,
                     env,
-                    logger
+                    logger,
+                    {
+                      canvasId: merchantMetadata.canvasId ?? undefined,
+                      merchantUuid: merchantMetadata.merchantUuid ?? undefined,
+                      merchantName: merchantMetadata.merchantName ?? undefined,
+                    }
                   );
                   logger.info('Call vectorized', { callId: call.id });
                 }
@@ -428,6 +482,19 @@ async function backfillCallsDatabase(
                   aiEnabled: includeAI,
                   vectorized: includeVectorize,
                 });
+
+                try {
+                  await syncCallToD1(completeData, env, notionClient, logger, {
+                    notionPageId,
+                    recordingUrl,
+                    voicemailUrl,
+                  });
+                } catch (error) {
+                  logger.error('Failed to sync call to D1 during backfill', {
+                    callId: call.id,
+                    error,
+                  });
+                }
               } catch (error) {
                 failed++;
                 const errorMessage = error instanceof Error ? error.message : String(error);
@@ -594,6 +661,13 @@ async function backfillMessagesDatabase(
 
                 // Vectorize (if enabled)
                 if (includeVectorize) {
+                  const merchantMetadata = canvasId
+                    ? await resolveMerchantMetadata(env, logger, {
+                        canvasId,
+                        notionClient,
+                      })
+                    : { canvasId: null, merchantUuid: null, merchantName: null };
+
                   await indexMessage(
                     message,
                     aiAnalysis?.summary,
@@ -601,7 +675,12 @@ async function backfillMessagesDatabase(
                     merchantUuid,
                     canvasIdForLog || null,
                     env,
-                    logger
+                    logger,
+                    {
+                      canvasId: merchantMetadata.canvasId ?? undefined,
+                      merchantUuid: merchantMetadata.merchantUuid ?? undefined,
+                      merchantName: merchantMetadata.merchantName ?? undefined,
+                    }
                   );
                 }
 
@@ -632,6 +711,17 @@ async function backfillMessagesDatabase(
                   canvasId: canvasIdForLog,
                   vectorized: includeVectorize,
                 });
+
+                try {
+                  await syncMessageToD1(message, env, notionClient, logger, {
+                    notionPageId,
+                  });
+                } catch (error) {
+                  logger.error('Failed to sync message to D1 during backfill', {
+                    messageId: message.id,
+                    error,
+                  });
+                }
               } catch (error) {
                 failed++;
                 const errorMessage = error instanceof Error ? error.message : String(error);
@@ -684,11 +774,415 @@ async function backfillMailDatabase(
 ) {
   logger.info('Backfilling Mail database', { daysBack });
 
-  // TODO: Implement based on your mail source
-  // This is a placeholder for mail synchronization
-  logger.info('Mail backfill not yet implemented - add your mail source integration here');
+  const notionClient = new NotionClient(env, logger);
+  let synced = 0;
+  let failed = 0;
+  let skipped = 0;
 
-  return { synced: 0, failed: 0, skipped: 0 };
+  try {
+    const cutoff = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
+    let startCursor: string | undefined = undefined;
+
+    do {
+      const response = await notionClient.queryDatabase(env.NOTION_MAIL_DATABASE_ID, {
+        pageSize: batchSize,
+        startCursor,
+        filter: {
+          property: 'Created At',
+          date: {
+            on_or_after: cutoff,
+          },
+        },
+      });
+
+      const pages = Array.isArray(response.results) ? response.results : [];
+
+      for (const page of pages) {
+        try {
+          const mailInput = mapMailPageToSyncInput(page);
+          await syncMailToD1(mailInput, env, notionClient, logger, {
+            notionPageId: page.id,
+          });
+          synced++;
+        } catch (error) {
+          failed++;
+          logger.error('Failed to sync mail page to D1', {
+            pageId: page?.id,
+            error,
+          });
+        }
+      }
+
+      startCursor = response.next_cursor ?? undefined;
+      if (!response.has_more) {
+        break;
+      }
+    } while (startCursor);
+
+    logger.info('Mail backfill completed', { synced, failed, skipped });
+    return { synced, failed, skipped };
+  } catch (error) {
+    logger.error('Mail backfill failed', error);
+    throw error;
+  }
+}
+
+function getPlainText(property: any): string | null {
+  if (!property) {
+    return null;
+  }
+
+  const segments = Array.isArray(property.rich_text)
+    ? property.rich_text
+    : Array.isArray(property.title)
+      ? property.title
+      : [];
+
+  if (!Array.isArray(segments)) {
+    return null;
+  }
+
+  const text = segments.map((segment: any) => segment.plain_text ?? '').join('').trim();
+  return text || null;
+}
+
+function mapMailPageToSyncInput(page: any): MailSyncInput {
+  const props = page.properties || {};
+  const subject = getPlainText(props.Subject) ?? '(No Subject)';
+  const body = getPlainText(props.Body) ?? '';
+  const from = props.From?.email ?? getPlainText(props.From) ?? undefined;
+  const toRaw = getPlainText(props.To) ?? '';
+  const toList = toRaw
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  const direction = props.Direction?.select?.name ?? undefined;
+  const status = props.Status?.select?.name ?? undefined;
+  const createdAt = props['Created At']?.date?.start ?? page.created_time;
+  const updatedAt = props['Updated At']?.date?.start ?? page.last_edited_time;
+  const relation = Array.isArray(props.Canvas?.relation) ? props.Canvas.relation : [];
+  let canvasId = relation.length > 0 ? relation[0].id : undefined;
+  const rawData = getPlainText(props['Raw Data']);
+  let metadata: Record<string, any> | undefined;
+  let mailId = page.id;
+  let threadId: string | undefined;
+
+  const propertyMailId = getPlainText(props['Message ID']);
+  if (propertyMailId) {
+    mailId = propertyMailId;
+  }
+
+  if (rawData) {
+    try {
+      const parsed = JSON.parse(rawData);
+      metadata = parsed;
+      if (typeof parsed?.id === 'string') {
+        mailId = parsed.id;
+      }
+      if (typeof parsed?.threadId === 'string') {
+        threadId = parsed.threadId;
+      } else if (parsed?.conversationId !== undefined) {
+        threadId = String(parsed.conversationId);
+      }
+      if (!canvasId && typeof parsed?.canvasId === 'string') {
+        canvasId = parsed.canvasId;
+      }
+    } catch (error) {
+      metadata = undefined;
+    }
+  }
+
+  const conversationIdFromProperty = getPlainText(props['Conversation ID']);
+  if (conversationIdFromProperty) {
+    if (!threadId) {
+      threadId = conversationIdFromProperty;
+    }
+    if (!metadata) {
+      metadata = {};
+    }
+    if (metadata.conversationId === undefined) {
+      metadata.conversationId = conversationIdFromProperty;
+    }
+  }
+
+  const mimeMessageIdFromProperty = getPlainText(props['MIME Message ID']);
+  if (mimeMessageIdFromProperty) {
+    if (!metadata) {
+      metadata = {};
+    }
+    if (metadata.mimeMessageId === undefined) {
+      metadata.mimeMessageId = mimeMessageIdFromProperty;
+    }
+  }
+
+  return {
+    id: mailId,
+    subject,
+    body,
+    from,
+    to: toList.length > 0 ? toList : undefined,
+    direction,
+    status,
+    createdAt,
+    updatedAt,
+    threadId,
+    metadata,
+    canvasId,
+  };
+}
+
+interface ReindexOptions {
+  limit?: number;
+}
+
+type InteractionVectorRow = {
+  id: string;
+  canvas_id: string | null;
+  interaction_type: 'call' | 'message';
+  summary: string | null;
+  occurred_at: number;
+  notion_page_id: string | null;
+  metadata: string | null;
+};
+
+export async function reindexVectorMetadata(
+  env: Env,
+  logger: Logger,
+  options: ReindexOptions = {}
+): Promise<{ processed: number; skipped: number; failed: number }> {
+  const { limit = 500 } = options;
+
+  logger.info('Starting vector metadata reindex', { limit });
+
+  const notionClient = new NotionClient(env, logger);
+  const rawCache = new Map<string, any>();
+
+  const result = await env.DB.prepare(
+    `SELECT id, canvas_id, interaction_type, summary, occurred_at, notion_page_id, metadata
+       FROM interactions
+      WHERE interaction_type IN ('call', 'message')
+      ORDER BY occurred_at DESC
+      LIMIT ?`
+  ).bind(limit).all<InteractionVectorRow>();
+
+  const rows = Array.isArray(result.results)
+    ? (result.results as InteractionVectorRow[])
+    : [];
+
+  let processed = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  for (const row of rows) {
+    try {
+      if (!row.notion_page_id) {
+        skipped++;
+        continue;
+      }
+
+      const merchantMetadata = row.canvas_id
+        ? await resolveMerchantMetadata(env, logger, {
+            canvasId: row.canvas_id,
+            notionClient,
+          })
+        : { canvasId: null, merchantUuid: null, merchantName: null };
+
+      if (row.interaction_type === 'call') {
+        const callContext = await loadCallContext(
+          notionClient,
+          row.notion_page_id,
+          logger,
+          rawCache
+        );
+
+        if (!callContext) {
+          skipped++;
+          continue;
+        }
+
+        const summaryText = row.summary ?? callContext.summary ?? undefined;
+
+        await indexCall(
+          callContext.call,
+          callContext.transcript,
+          summaryText,
+          row.notion_page_id,
+          env,
+          logger,
+          {
+            canvasId: merchantMetadata.canvasId ?? undefined,
+            merchantUuid: merchantMetadata.merchantUuid ?? undefined,
+            merchantName: merchantMetadata.merchantName ?? undefined,
+          }
+        );
+      } else if (row.interaction_type === 'message') {
+        const messageContext = await loadMessageContext(
+          notionClient,
+          row.notion_page_id,
+          logger,
+          rawCache
+        );
+
+        if (!messageContext) {
+          skipped++;
+          continue;
+        }
+
+        const summaryText = row.summary ?? messageContext.summary ?? undefined;
+
+        await indexMessage(
+          messageContext.message,
+          summaryText,
+          row.notion_page_id,
+          env,
+          logger,
+          {
+            canvasId: merchantMetadata.canvasId ?? undefined,
+            merchantUuid: merchantMetadata.merchantUuid ?? undefined,
+            merchantName: merchantMetadata.merchantName ?? undefined,
+          }
+        );
+      } else {
+        skipped++;
+        continue;
+      }
+
+      processed++;
+    } catch (error) {
+      failed++;
+      logger.error('Failed to reindex interaction vector', {
+        interactionId: row.id,
+        error,
+      });
+    }
+  }
+
+  logger.info('Vector metadata reindex completed', {
+    processed,
+    skipped,
+    failed,
+  });
+
+  return { processed, skipped, failed };
+}
+
+function extractRichTextContent(property: any): string | null {
+  if (!property) {
+    return null;
+  }
+
+  const richText = Array.isArray(property.rich_text)
+    ? property.rich_text
+    : Array.isArray(property.title)
+      ? property.title
+      : [];
+
+  if (!richText.length) {
+    return null;
+  }
+
+  const text = richText.map((t: any) => t.plain_text || '').join('');
+  return text.trim() || null;
+}
+
+async function loadRawNotionData(
+  notionClient: NotionClient,
+  pageId: string,
+  logger: Logger,
+  cache: Map<string, any>
+): Promise<any | null> {
+  if (cache.has(pageId)) {
+    return cache.get(pageId);
+  }
+
+  try {
+    const page = await notionClient.getPage(pageId);
+    const rawText = extractRichTextContent(page?.properties?.['Raw Data']);
+    if (!rawText) {
+      cache.set(pageId, null);
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(rawText);
+      cache.set(pageId, parsed);
+      return parsed;
+    } catch (error) {
+      logger.warn('Failed to parse Notion Raw Data for vector reindex', {
+        pageId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      cache.set(pageId, null);
+      return null;
+    }
+  } catch (error) {
+    logger.warn('Failed to load Notion page for vector reindex', {
+      pageId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    cache.set(pageId, null);
+    return null;
+  }
+}
+
+async function loadCallContext(
+  notionClient: NotionClient,
+  pageId: string,
+  logger: Logger,
+  cache: Map<string, any>
+): Promise<{ call: Call; transcript?: string; summary?: string } | null> {
+  const raw = await loadRawNotionData(notionClient, pageId, logger, cache);
+  if (!raw) {
+    return null;
+  }
+
+  const callData = (raw.call ?? raw) as Call | undefined;
+  if (!callData?.id) {
+    return null;
+  }
+
+  let transcript: string | undefined;
+  if (raw.voicemail?.transcription) {
+    transcript = raw.voicemail.transcription;
+  } else if (Array.isArray(raw.transcript?.dialogue)) {
+    transcript = raw.transcript.dialogue
+      .map((entry: any) => entry?.content)
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  let summary: string | undefined;
+  if (Array.isArray(raw.summary?.summary)) {
+    summary = raw.summary.summary.join('\n');
+  }
+
+  return { call: callData, transcript, summary };
+}
+
+async function loadMessageContext(
+  notionClient: NotionClient,
+  pageId: string,
+  logger: Logger,
+  cache: Map<string, any>
+): Promise<{ message: Message; summary?: string } | null> {
+  const raw = await loadRawNotionData(notionClient, pageId, logger, cache);
+  if (!raw) {
+    return null;
+  }
+
+  const messageData = (raw.message ?? raw) as Message | undefined;
+  if (!messageData?.id) {
+    return null;
+  }
+
+  let summary: string | undefined;
+  if (raw.aiSummary && typeof raw.aiSummary === 'string') {
+    summary = raw.aiSummary;
+  } else if (messageData.text) {
+    summary = messageData.text.slice(0, 500);
+  }
+
+  return { message: messageData, summary };
 }
 
 /**

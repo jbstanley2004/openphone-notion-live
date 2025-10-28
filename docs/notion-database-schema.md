@@ -116,6 +116,33 @@ Create a new database in Notion with the following properties:
 
 ---
 
+## Mail Database
+
+### Database Properties
+
+| Property Name | Property Type | Description |
+|---------------|---------------|-------------|
+| **Subject** | Title | Email subject line |
+| **Message ID** | Text (rich text) | OpenPhone mail identifier used for deduping |
+| **From** | Email | Sender email address |
+| **To** | Text | Recipient list |
+| **CC** | Text | Carbon copy recipients |
+| **BCC** | Text | Blind carbon copy recipients |
+| **Body** | Text | Full email body |
+| **Conversation ID** | Text | Conversation/thread identifier |
+| **MIME Message ID** | Text | MIME message identifier from provider |
+| **Direction** | Select | `incoming` or `outgoing` |
+| **Status** | Select | Mail delivery status |
+| **Created At** | Date | When the mail was created |
+| **Updated At** | Date | When the mail was updated |
+| **Has Attachments** | Checkbox | Whether attachments exist |
+| **Attachments** | Text | Attachment metadata summary |
+| **Canvas** | Relation | Link to Canvas record |
+| **Raw Data** | Text | Complete JSON payload |
+| **Synced At** | Date | When synced to Notion |
+
+---
+
 ## Creating the Databases
 
 ### Method 1: Manual Creation in Notion

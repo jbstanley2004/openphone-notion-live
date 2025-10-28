@@ -12,6 +12,25 @@
 import type { Env } from '../types/env';
 import type { Logger } from '../utils/logger';
 import { semanticSearch } from '../utils/vector-search';
+import {
+  getMerchantRow,
+  getInteractionsForMerchant,
+  getMailThreadsForMerchant,
+  findCanvasByNormalizedPhone,
+  findCanvasByNormalizedEmail,
+  searchMerchantsInD1,
+  type MerchantRow,
+  type InteractionRow,
+  type MailThreadRow,
+} from '../utils/d1-merchants';
+
+interface MerchantSearchResult {
+  canvasId: string;
+  relevance: number;
+  preview: string;
+  merchantUuid?: string;
+  merchantName?: string;
+}
 
 export interface MerchantData {
   canvasId: string;
@@ -30,6 +49,7 @@ export interface MerchantData {
     avgSentiment?: string;
     avgLeadScore?: number;
   };
+  source?: 'd1' | 'notion';
 }
 
 export interface TimelineEntry {
@@ -53,6 +73,12 @@ export async function getMerchantDataByCanvas(
   logger.info('Retrieving merchant data by Canvas ID', { canvasId });
 
   try {
+    const d1Merchant = await loadMerchantFromD1(canvasId, env, logger);
+    if (d1Merchant) {
+      logger.info('Merchant data loaded from D1 cache', { canvasId });
+      return d1Merchant;
+    }
+
     // Import Notion client
     const { NotionClient } = await import('../utils/notion-client');
     const notionClient = new NotionClient(env, logger);
@@ -111,6 +137,7 @@ export async function getMerchantDataByCanvas(
       mail,
       timeline,
       stats,
+      source: 'notion',
     };
   } catch (error) {
     logger.error('Failed to retrieve merchant data', { canvasId, error });
@@ -129,6 +156,15 @@ export async function getMerchantDataByPhone(
   logger.info('Retrieving merchant data by phone number', { phoneNumber });
 
   try {
+    const d1CanvasId = await findCanvasByNormalizedPhone(env, phoneNumber);
+    if (d1CanvasId) {
+      const d1Merchant = await loadMerchantFromD1(d1CanvasId, env, logger);
+      if (d1Merchant) {
+        logger.info('Merchant data loaded from D1 cache by phone', { phoneNumber, canvasId: d1CanvasId });
+        return d1Merchant;
+      }
+    }
+
     const { NotionClient } = await import('../utils/notion-client');
     const notionClient = new NotionClient(env, logger);
 
@@ -141,7 +177,8 @@ export async function getMerchantDataByPhone(
     }
 
     // Get data using Canvas ID
-    return await getMerchantDataByCanvas(canvasId, env, logger);
+    const data = await getMerchantDataByCanvas(canvasId, env, logger);
+    return data;
   } catch (error) {
     logger.error('Failed to retrieve merchant data by phone', { phoneNumber, error });
     throw error;
@@ -159,6 +196,15 @@ export async function getMerchantDataByEmail(
   logger.info('Retrieving merchant data by email', { email });
 
   try {
+    const d1CanvasId = await findCanvasByNormalizedEmail(env, email);
+    if (d1CanvasId) {
+      const d1Merchant = await loadMerchantFromD1(d1CanvasId, env, logger);
+      if (d1Merchant) {
+        logger.info('Merchant data loaded from D1 cache by email', { email, canvasId: d1CanvasId });
+        return d1Merchant;
+      }
+    }
+
     const { NotionClient } = await import('../utils/notion-client');
     const notionClient = new NotionClient(env, logger);
 
@@ -171,7 +217,8 @@ export async function getMerchantDataByEmail(
     }
 
     // Get data using Canvas ID
-    return await getMerchantDataByCanvas(canvasId, env, logger);
+    const data = await getMerchantDataByCanvas(canvasId, env, logger);
+    return data;
   } catch (error) {
     logger.error('Failed to retrieve merchant data by email', { email, error });
     throw error;
@@ -190,42 +237,87 @@ export async function searchMerchants(
   },
   env: Env,
   logger: Logger
-): Promise<{ canvasId: string; relevance: number; preview: string }[]> {
+): Promise<MerchantSearchResult[]> {
   logger.info('Searching merchants', { query });
 
   try {
+    const d1Results = await searchMerchantsInD1(env, query, options.topK || 10);
+    if (d1Results.length > 0) {
+      logger.info('Merchants found via D1 search', { count: d1Results.length });
+      const enriched = await Promise.all(
+        d1Results.map(async (result) => {
+          const merchant = await getMerchantRow(env, result.canvasId);
+          return {
+            canvasId: result.canvasId,
+            relevance: result.score,
+            preview: result.preview || 'Cached interaction',
+            merchantUuid: merchant?.merchant_uuid ?? result.canvasId,
+            merchantName: merchant?.name ?? undefined,
+          } satisfies MerchantSearchResult;
+        })
+      );
+
+      return enriched;
+    }
+
     // Use semantic search to find relevant interactions
     const results = await semanticSearch(query, options, env, logger);
 
-    // Group by Canvas ID and aggregate relevance scores
-    const canvasMap = new Map<string, { relevance: number; preview: string }>();
+    const merchantMap = new Map<string, {
+      canvasId?: string;
+      merchantUuid?: string;
+      merchantName?: string;
+      relevance: number;
+      preview: string;
+      lastTimestamp: number;
+    }>();
 
     for (const result of results) {
-      if (!result.metadata.notionPageId) continue;
+      const metadata = result.metadata;
+      const canvasId = metadata.canvasId ?? undefined;
+      const merchantUuid = metadata.merchantUuid ?? canvasId;
 
-      // Get Canvas ID from the page
-      // TODO: This would need to query Notion to get the Canvas relation
-      // For now, use a placeholder
-      const canvasId = 'placeholder';
+      if (!canvasId && !merchantUuid) {
+        continue;
+      }
 
-      const existing = canvasMap.get(canvasId);
+      const key = merchantUuid ?? canvasId!;
+      const timestampValue = metadata.timestamp ? Date.parse(metadata.timestamp) : 0;
+      const preview = `Match in ${metadata.type} (${metadata.direction ?? 'unknown'}) at ${metadata.timestamp}`;
+
+      const existing = merchantMap.get(key);
       if (existing) {
         existing.relevance = Math.max(existing.relevance, result.score);
+        if (!existing.canvasId && canvasId) {
+          existing.canvasId = canvasId;
+        }
+        if (!existing.merchantName && metadata.merchantName) {
+          existing.merchantName = metadata.merchantName;
+        }
+        if (timestampValue > existing.lastTimestamp) {
+          existing.lastTimestamp = timestampValue;
+          existing.preview = preview;
+        }
       } else {
-        canvasMap.set(canvasId, {
+        merchantMap.set(key, {
+          canvasId,
+          merchantUuid: merchantUuid ?? undefined,
+          merchantName: metadata.merchantName ?? undefined,
           relevance: result.score,
-          preview: `Match in ${result.metadata.type} from ${result.metadata.timestamp}`,
+          preview,
+          lastTimestamp: timestampValue,
         });
       }
     }
 
-    // Convert to array and sort by relevance
-    const merchants = Array.from(canvasMap.entries())
-      .map(([canvasId, data]) => ({
-        canvasId,
-        relevance: data.relevance,
-        preview: data.preview,
-      }))
+    const merchants = Array.from(merchantMap.values())
+      .map((entry) => ({
+        canvasId: entry.canvasId ?? entry.merchantUuid ?? 'unknown',
+        relevance: entry.relevance,
+        preview: entry.preview,
+        merchantUuid: entry.merchantUuid ?? entry.canvasId,
+        merchantName: entry.merchantName,
+      }) as MerchantSearchResult)
       .sort((a, b) => b.relevance - a.relevance)
       .slice(0, options.topK || 10);
 
@@ -304,6 +396,194 @@ export async function getMerchantSummary(
 // Helper Functions
 // ========================================================================
 
+async function loadMerchantFromD1(
+  canvasId: string,
+  env: Env,
+  logger: Logger
+): Promise<MerchantData | null> {
+  const merchant = await getMerchantRow(env, canvasId);
+  if (!merchant) {
+    return null;
+  }
+
+  const interactions = await getInteractionsForMerchant(env, canvasId);
+  const threads = await getMailThreadsForMerchant(env, canvasId);
+
+  return mapD1DataToMerchantData(merchant, interactions, threads);
+}
+
+function parseMetadata<T>(value: string | null): T | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(value) as T;
+  } catch (error) {
+    console.warn('Failed to parse metadata from D1', error);
+    return null;
+  }
+}
+
+function buildCanvasPageFromMerchantRow(merchant: MerchantRow): any {
+  const metadata = parseMetadata<Record<string, any>>(merchant.metadata) || {};
+  const name = merchant.name ?? metadata.name ?? '';
+  const phone = merchant.primary_phone ?? metadata.primary_phone ?? null;
+  const email = merchant.primary_email ?? metadata.primary_email ?? null;
+  const tags: string[] = Array.isArray(metadata.tags) ? metadata.tags : [];
+
+  return {
+    id: merchant.canvas_id,
+    properties: {
+      Name: {
+        title: name ? [{ plain_text: name }] : [],
+      },
+      Phone: {
+        phone_number: phone,
+      },
+      Email: {
+        email,
+      },
+      Status: merchant.status ? { select: { name: merchant.status } } : { select: null },
+      Segment: merchant.segment ? { select: { name: merchant.segment } } : { select: null },
+      Owner: metadata.owner ? { rich_text: [{ plain_text: metadata.owner }] } : { rich_text: [] },
+      Tags: tags.length > 0 ? { multi_select: tags.map((tag) => ({ name: tag })) } : { multi_select: [] },
+    },
+  };
+}
+
+function buildCallPageFromInteraction(row: InteractionRow): any {
+  const occurredAtIso = new Date(row.occurred_at).toISOString();
+  const metadata = parseMetadata<Record<string, any>>(row.metadata);
+
+  return {
+    id: row.notion_page_id || `d1-call-${row.id}`,
+    properties: {
+      'Call ID': {
+        title: [{ plain_text: row.openphone_id || row.id }],
+      },
+      'Created At': {
+        date: { start: occurredAtIso },
+      },
+      'AI Summary': {
+        rich_text: row.summary ? [{ plain_text: row.summary }] : [],
+      },
+      'AI Sentiment': {
+        select: row.sentiment ? { name: row.sentiment } : null,
+      },
+      Direction: {
+        select: row.direction ? { name: row.direction } : null,
+      },
+      'AI Lead Score': {
+        number: row.lead_score ?? null,
+      },
+      Metadata: {
+        rich_text: metadata ? [{ plain_text: JSON.stringify(metadata) }] : [],
+      },
+    },
+  };
+}
+
+function buildMessagePageFromInteraction(row: InteractionRow): any {
+  const occurredAtIso = new Date(row.occurred_at).toISOString();
+  const metadata = parseMetadata<Record<string, any>>(row.metadata);
+
+  return {
+    id: row.notion_page_id || `d1-message-${row.id}`,
+    properties: {
+      'Message ID': {
+        title: [{ plain_text: row.openphone_id || row.id }],
+      },
+      'Created At': {
+        date: { start: occurredAtIso },
+      },
+      Body: {
+        rich_text: row.summary ? [{ plain_text: row.summary }] : [],
+      },
+      'AI Sentiment': {
+        select: row.sentiment ? { name: row.sentiment } : null,
+      },
+      Direction: {
+        select: row.direction ? { name: row.direction } : null,
+      },
+      Metadata: {
+        rich_text: metadata ? [{ plain_text: JSON.stringify(metadata) }] : [],
+      },
+    },
+  };
+}
+
+function buildMailPageFromInteraction(row: InteractionRow): any {
+  const occurredAtIso = new Date(row.occurred_at).toISOString();
+  const metadata = parseMetadata<Record<string, any>>(row.metadata);
+
+  return {
+    id: row.notion_page_id || `d1-mail-${row.id}`,
+    properties: {
+      Subject: {
+        title: row.summary ? [{ plain_text: row.summary }] : [],
+      },
+      'Received At': {
+        date: { start: occurredAtIso },
+      },
+      Metadata: {
+        rich_text: metadata ? [{ plain_text: JSON.stringify(metadata) }] : [],
+      },
+    },
+  };
+}
+
+function mapD1DataToMerchantData(
+  merchant: MerchantRow,
+  interactions: InteractionRow[],
+  threads: MailThreadRow[]
+): MerchantData {
+  const canvas = buildCanvasPageFromMerchantRow(merchant);
+  const calls = interactions
+    .filter((interaction) => interaction.interaction_type === 'call')
+    .map(buildCallPageFromInteraction);
+  const messages = interactions
+    .filter((interaction) => interaction.interaction_type === 'message')
+    .map(buildMessagePageFromInteraction);
+  const mail = interactions
+    .filter((interaction) => interaction.interaction_type === 'mail')
+    .map(buildMailPageFromInteraction);
+
+  // Attach mail thread metadata to mail entries when available
+  if (threads.length > 0) {
+    const threadMap = new Map<string, MailThreadRow>();
+    for (const thread of threads) {
+      threadMap.set(thread.thread_id, thread);
+    }
+
+    mail.forEach((mailEntry, index) => {
+      const interaction = interactions.filter((i) => i.interaction_type === 'mail')[index];
+      if (!interaction) return;
+      const metadata = parseMetadata<Record<string, any>>(interaction.metadata) || {};
+      if (interaction.mail_thread_id && threadMap.has(interaction.mail_thread_id)) {
+        metadata.thread = threadMap.get(interaction.mail_thread_id);
+        mailEntry.properties.Metadata = {
+          rich_text: [{ plain_text: JSON.stringify(metadata) }],
+        };
+      }
+    });
+  }
+
+  const timeline = buildTimeline(calls, messages, mail);
+  const stats = calculateStats(calls, messages, mail, timeline);
+
+  return {
+    canvasId: merchant.canvas_id,
+    canvas,
+    calls,
+    messages,
+    mail,
+    timeline,
+    stats,
+    source: 'd1',
+  };
+}
+
 function buildTimeline(calls: any[], messages: any[], mail: any[]): TimelineEntry[] {
   const timeline: TimelineEntry[] = [];
 
@@ -369,16 +649,18 @@ function calculateStats(
     .map((call) => call.properties?.['AI Sentiment']?.select?.name)
     .filter(Boolean);
 
-  const sentimentCounts = sentiments.reduce(
-    (acc, s) => {
-      acc[s] = (acc[s] || 0) + 1;
-      return acc;
-    },
-    {} as Record<string, number>
+  const sentimentCounts = sentiments.reduce<Record<string, number>>((acc, sentiment) => {
+    acc[sentiment] = (acc[sentiment] || 0) + 1;
+    return acc;
+  }, {});
+
+  const sortedSentiments = (Object.entries(sentimentCounts) as Array<[string, number]>).sort(
+    (a, b) => b[1] - a[1]
   );
 
   const sentimentEntries = Object.entries(sentimentCounts) as Array<[string, number]>;
   const avgSentiment = sentimentEntries.sort((a, b) => b[1] - a[1])[0]?.[0] || 'neutral';
+  const avgSentiment = sortedSentiments[0]?.[0] || 'neutral';
 
   // Calculate average lead score
   const leadScores = calls

@@ -10,7 +10,7 @@
  */
 
 import type { Env } from '../types/env';
-import type { Call, Message } from '../types/openphone';
+import type { Call, Message, Mail } from '../types/openphone';
 import type { Logger } from '../utils/logger';
 
 export interface CallAnalysis {
@@ -26,6 +26,16 @@ export interface CallAnalysis {
 }
 
 export interface MessageAnalysis {
+  sentiment: {
+    label: string;
+    score: number;
+  };
+  summary: string;
+  actionItems: string[];
+  category: string;
+}
+
+export interface MailAnalysis {
   sentiment: {
     label: string;
     score: number;
@@ -135,6 +145,53 @@ export async function analyzeMessageWithAI(
     return {
       sentiment: { label: 'neutral', score: 0.5 },
       summary: message.text || '',
+      actionItems: [],
+      category: 'general',
+    };
+  }
+}
+
+/**
+ * Analyze mail using Workers AI
+ */
+export async function analyzeMailWithAI(
+  mail: Mail,
+  env: Env,
+  logger: Logger
+): Promise<MailAnalysis> {
+  const startTime = Date.now();
+
+  try {
+    const context = [mail.subject, mail.body].filter(Boolean).join('\n');
+
+    const [sentiment, summary, actionItems] = await Promise.all([
+      analyzeSentiment(context, env),
+      generateSummary(context, env),
+      extractActionItems(context, env),
+    ]);
+
+    const category = await categorizeMessage(context, env);
+
+    const duration = Date.now() - startTime;
+    logger.info('Mail AI analysis completed', {
+      mailId: mail.id,
+      sentiment: sentiment.label,
+      category,
+      durationMs: duration,
+    });
+
+    return {
+      sentiment,
+      summary,
+      actionItems,
+      category,
+    };
+  } catch (error) {
+    logger.error('Mail AI analysis failed', { mailId: mail.id, error: String(error) });
+
+    return {
+      sentiment: { label: 'neutral', score: 0.5 },
+      summary: mail.subject,
       actionItems: [],
       category: 'general',
     };

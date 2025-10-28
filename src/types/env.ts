@@ -36,6 +36,8 @@ export interface Env {
   OPENPHONE_API_BASE: string;
   LOG_LEVEL: 'debug' | 'info' | 'warn' | 'error';
   WEBHOOK_PATH: string;
+  SELF_PHONE_NUMBERS?: string; // JSON array or comma/newline separated list of internal numbers
+  RECORDINGS_PUBLIC_BASE_URL?: string; // Base URL for accessing uploaded recordings
 
   // ========================================================================
   // Bindings
@@ -68,7 +70,9 @@ export interface Env {
   CALL_VECTORS: Vectorize;
 
   // Workflows for complex multi-step processing
-  CALL_PROCESSING_WORKFLOW: Fetcher;
+  CALL_PROCESSING_WORKFLOW?: Fetcher;
+  MESSAGE_PROCESSING_WORKFLOW?: Fetcher;
+  MAIL_PROCESSING_WORKFLOW?: Fetcher;
 
   // Static Assets for dashboard
   ASSETS: Fetcher;

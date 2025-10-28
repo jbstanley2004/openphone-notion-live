@@ -17,7 +17,9 @@
   "vars": {
     "OPENPHONE_API_BASE": "https://api.openphone.com/v1",
     "LOG_LEVEL": "info",
-    "WEBHOOK_PATH": "/webhooks/openphone"
+    "WEBHOOK_PATH": "/webhooks/openphone",
+    "SELF_PHONE_NUMBERS": "[]", // Optional: JSON array or comma-separated list of internal numbers
+    "RECORDINGS_PUBLIC_BASE_URL": "https://media.yourdomain.com" // Optional: set when serving recordings from a public domain
   },
 
   // R2 bucket for storing call recordings
@@ -53,16 +55,19 @@
     "producers": [
       {
         "binding": "WEBHOOK_EVENTS",
-        "queue": "openphone-webhook-events"
+        "queue": "openphone-webhook-events",
+        "preview_queue": "openphone-webhook-events-dev"
       }
     ],
     "consumers": [
       {
         "queue": "openphone-webhook-events",
+        "preview_queue": "openphone-webhook-events-dev",
         "max_batch_size": 10,
         "max_batch_timeout": 30,
         "max_retries": 3,
-        "dead_letter_queue": "openphone-webhook-events-dlq"
+        "dead_letter_queue": "openphone-webhook-events-dlq",
+        "preview_dead_letter_queue": "openphone-webhook-events-dev-dlq"
       }
     ]
   },
@@ -80,7 +85,8 @@
     {
       "binding": "DB",
       "database_name": "openphone-sync-db",
-      "database_id": "bd3d363a-f18e-4dcf-8b80-928c83664d3e"
+      "database_id": "bd3d363a-f18e-4dcf-8b80-928c83664d3e",
+      "preview_database_id": "bd3d363a-f18e-4dcf-8b80-928c83664d3e"
     }
   ],
 

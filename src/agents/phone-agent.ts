@@ -21,6 +21,7 @@ import { RateLimiter } from '../utils/rate-limiter';
 import { createLogger } from '../utils/logger';
 import { analyzeCallWithAI } from '../processors/ai-processor';
 import { indexCall, findSimilarCalls } from '../utils/vector-search';
+import { resolveMerchantMetadata } from '../utils/merchant-metadata';
 
 interface PhoneAgentState {
   phoneNumberId: string;
@@ -31,6 +32,7 @@ interface PhoneAgentState {
   totalCallsSynced: number;
   totalMessagesSynced: number;
   callsProcessed: number;
+  callsProcessed?: number;
   insights: Array<{
     callId: string;
     sentiment: string;
@@ -108,7 +110,11 @@ export class PhoneAgent {
       const rateLimiter = new RateLimiter(this.env.RATE_LIMITS, this.logger);
       const openPhoneClient = new OpenPhoneClient(this.env, this.logger, rateLimiter);
       const notionClient = new NotionClient(this.env, this.logger);
-      const r2Client = new R2Client(this.env.RECORDINGS_BUCKET, this.logger);
+      const r2Client = new R2Client(
+        this.env.RECORDINGS_BUCKET,
+        this.logger,
+        this.env.RECORDINGS_PUBLIC_BASE_URL
+      );
 
       // Fetch complete call data
       const completeData = await openPhoneClient.getCompleteCall(call.id);
@@ -124,6 +130,12 @@ export class PhoneAgent {
 
       // Intelligent Canvas matching with confidence scoring
       const canvasId = await this.findBestCanvas(call, aiAnalysis);
+      const merchantMetadata = canvasId
+        ? await resolveMerchantMetadata(this.env, this.logger, {
+            canvasId,
+            notionClient,
+          })
+        : { canvasId: null, merchantUuid: null, merchantName: null };
 
       // Handle recordings
       let recordingUrl: string | undefined;
@@ -194,6 +206,11 @@ export class PhoneAgent {
         this.env,
         this.logger
       );
+      await indexCall(call, transcript, aiAnalysis.summary, notionPageId, this.env, this.logger, {
+        canvasId: merchantMetadata.canvasId ?? undefined,
+        merchantUuid: merchantMetadata.merchantUuid ?? undefined,
+        merchantName: merchantMetadata.merchantName ?? undefined,
+      });
 
       // Find similar calls (duplicate lead detection)
       const similarCalls = await findSimilarCalls(call.id, 3, this.env, this.logger);
@@ -230,6 +247,7 @@ export class PhoneAgent {
         notionPageId,
         canvasId,
         merchantUuid,
+        canvasId: merchantMetadata.canvasId,
         sentiment: aiAnalysis.sentiment.label,
         leadScore: aiAnalysis.leadScore,
         durationMs: duration,

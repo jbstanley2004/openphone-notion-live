@@ -75,7 +75,7 @@ export class R2Client {
         },
       });
 
-      const url = this.getPublicUrl(key);
+      const url = await this.getPublicUrl(key);
       this.logger.info('Recording uploaded successfully', { callId, key, url });
 
       return url;
@@ -116,7 +116,7 @@ export class R2Client {
         },
       });
 
-      const url = this.getPublicUrl(key);
+      const url = await this.getPublicUrl(key);
       this.logger.info('Voicemail uploaded successfully', { callId, key, url });
 
       return url;
@@ -189,25 +189,74 @@ export class R2Client {
    * Note: This requires R2 bucket to be configured with public access
    * or custom domain. Adjust based on your setup.
    */
-  private getPublicUrl(key: string): string {
+  private async getPublicUrl(key: string): Promise<string> {
     if (this.publicBaseUrl) {
-      return `${this.publicBaseUrl}/${key}`;
+      const normalizedBase = this.publicBaseUrl.replace(/\/+$/, '');
+      return `${normalizedBase}/${key}`;
     }
-    // Return a placeholder - you'll need to configure R2 public access
-    // or use R2 presigned URLs
-    return `https://r2.example.com/${key}`;
+
+    const maybeCreateSignedUrl = (this.bucket as unknown as {
+      createSignedUrl?: (options: { key: string; expires: Date }) => Promise<any>;
+    }).createSignedUrl;
+
+    if (typeof maybeCreateSignedUrl === 'function') {
+      const expires = new Date(Date.now() + 15 * 60 * 1000);
+      const result = await maybeCreateSignedUrl.call(this.bucket, { key, expires });
+
+      if (typeof result === 'string') {
+        return result;
+      }
+
+      if (result && typeof result === 'object') {
+        if (typeof (result as { url?: string }).url === 'string') {
+          return (result as { url: string }).url;
+        }
+
+        if (typeof (result as { signedUrl?: string }).signedUrl === 'string') {
+          return (result as { signedUrl: string }).signedUrl;
+        }
+      }
+    }
+
+    throw new Error(
+      'Unable to generate public URL for R2 object. Configure RECORDINGS_PUBLIC_BASE_URL or ensure R2 signed URLs are supported.'
+    );
   }
 
   /**
    * Generate a presigned URL for temporary access
-   * Note: R2 presigned URLs require the R2 API, not available in Workers yet
-   * This is a placeholder for future implementation
    */
   async getPresignedUrl(key: string, expiresIn: number = 3600): Promise<string> {
-    // For now, return the public URL
-    // In the future, this could use R2's presigned URL feature
-    this.logger.warn('Presigned URLs not yet implemented, returning public URL');
-    return this.getPublicUrl(key);
+    if (this.publicBaseUrl) {
+      return this.getPublicUrl(key);
+    }
+
+    const maybeCreateSignedUrl = (this.bucket as unknown as {
+      createSignedUrl?: (options: { key: string; expires: Date }) => Promise<any>;
+    }).createSignedUrl;
+
+    if (typeof maybeCreateSignedUrl !== 'function') {
+      throw new Error('R2 bucket does not support signed URLs. Configure RECORDINGS_PUBLIC_BASE_URL for public access.');
+    }
+
+    const expires = new Date(Date.now() + expiresIn * 1000);
+    const result = await maybeCreateSignedUrl.call(this.bucket, { key, expires });
+
+    if (typeof result === 'string') {
+      return result;
+    }
+
+    if (result && typeof result === 'object') {
+      if (typeof (result as { url?: string }).url === 'string') {
+        return (result as { url: string }).url;
+      }
+
+      if (typeof (result as { signedUrl?: string }).signedUrl === 'string') {
+        return (result as { signedUrl: string }).signedUrl;
+      }
+    }
+
+    throw new Error('Unexpected response when generating signed URL from R2.');
   }
 
   /**

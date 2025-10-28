@@ -36,7 +36,7 @@ export class Logger {
     return LOG_LEVELS[level] >= LOG_LEVELS[this.level];
   }
 
-  private log(level: LogLevel, message: string, data?: any) {
+  private log(level: LogLevel, message: string, data?: Record<string, unknown>) {
     if (!this.shouldLog(level)) {
       return;
     }
@@ -46,7 +46,7 @@ export class Logger {
       level,
       message,
       ...this.context,
-      ...(data && { data }),
+      ...(data && Object.keys(data).length > 0 ? { data } : {}),
     };
 
     // Use appropriate console method
@@ -68,6 +68,8 @@ export class Logger {
 
   error(message: string, error?: Error | any, data?: any) {
     const errorPayload = error instanceof Error
+  error(message: string, error?: Error | any, data: Record<string, unknown> = {}) {
+    const errorData = error instanceof Error
       ? {
           error: {
             message: error.message,
@@ -116,6 +118,7 @@ export class Logger {
     } else {
       this.info('Workflow step', data);
     }
+    this.log('error', message, { ...data, ...errorData });
   }
 
   withContext(additionalContext: LogContext): Logger {
@@ -123,6 +126,77 @@ export class Logger {
       { LOG_LEVEL: this.level } as Env,
       { ...this.context, ...additionalContext }
     );
+  }
+
+  startTimer(operation: string, data: Record<string, unknown> = {}) {
+    const startedAt = Date.now();
+    this.log('debug', 'timer.started', { operation, ...data });
+
+    return (
+      status: 'success' | 'error',
+      extra: Record<string, unknown> = {},
+      error?: unknown,
+    ) => {
+      const durationMs = Date.now() - startedAt;
+      const payload = { operation, durationMs, status, ...data, ...extra };
+
+      if (status === 'success') {
+        this.log('info', 'timer.completed', payload);
+      } else {
+        const errorPayload = error instanceof Error
+          ? { error: error.message, stack: error.stack, name: error.name }
+          : error
+            ? { error }
+            : {};
+
+        this.log('error', 'timer.failed', { ...payload, ...errorPayload });
+      }
+    };
+  }
+
+  logKVOperation(
+    binding: string,
+    action: 'get' | 'put' | 'delete',
+    details: Record<string, unknown> = {}
+  ) {
+    this.log('info', 'kv.operation', {
+      event: 'kv.operation',
+      binding,
+      action,
+      ...details,
+    });
+  }
+
+  logD1Query(
+    operation: string,
+    durationMs: number,
+    status: 'success' | 'error',
+    details: Record<string, unknown> = {}
+  ) {
+    const level: LogLevel = status === 'success' ? 'info' : 'error';
+    this.log(level, 'd1.query', {
+      event: 'd1.query',
+      operation,
+      durationMs,
+      status,
+      ...details,
+    });
+  }
+
+  logWorkflowStep(
+    workflow: string,
+    step: string,
+    status: 'start' | 'success' | 'failure',
+    details: Record<string, unknown> = {}
+  ) {
+    const level: LogLevel = status === 'failure' ? 'error' : 'info';
+    this.log(level, 'workflow.step', {
+      event: 'workflow.step',
+      workflow,
+      step,
+      status,
+      ...details,
+    });
   }
 }
 

@@ -107,11 +107,11 @@ npx wrangler login
 - **Canvas**: `fc0e485b6570460e995b94431b08f0a7`
 - **OpenPhone Calls**: Your calls database ID
 - **OpenPhone Messages**: Your messages database ID
-- **Your OpenPhone Number**: `+13365185544`
+- **Internal OpenPhone Numbers**: Configure via the `SELF_PHONE_NUMBERS` worker variable (JSON array or comma/newline separated list)
 
 ## How It Works
 
-- **Calls**: System finds the "other participant" (not your OpenPhone number) and searches Canvas by phone
+- **Calls**: System finds the "other participant" (excluding numbers listed in `SELF_PHONE_NUMBERS`) and searches Canvas by phone
 - **Messages**: For incoming, uses the "from" number; for outgoing, uses the "to" number
 - **Phone matching**: Numbers are normalized (removes +1, spaces, special chars)
 - **No match**: If no Canvas record found, creates empty relation (no errors)

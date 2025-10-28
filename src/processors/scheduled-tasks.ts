@@ -8,6 +8,9 @@ import { Logger } from '../utils/logger';
 import { runComprehensiveBackfill } from './comprehensive-backfill';
 import { NotionClient } from '../utils/notion-client';
 import { replicateCanvasCacheToKV } from './canvas-cache-replicator';
+import { replicateCanvasCacheToKV } from './canvas-cache-replicator';
+import { runAggregationJobs } from '../workflows/aggregation-jobs';
+import { runSystemHealthChecks } from './system-health';
 
 /**
  * Run all scheduled tasks
@@ -24,6 +27,13 @@ export async function runScheduledTasks(env: Env, logger: Logger): Promise<void>
   try {
     await replicateCanvasCacheToKV(env, logger);
 
+    const replication = await replicateCanvasCacheToKV(env, logger);
+    logger.info('Canvas cache replication run before backfill', replication);
+  } catch (error) {
+    logger.error('Canvas cache replication failed', error);
+  }
+
+  try {
     // Run comprehensive backfill with full AI and vectorization
     const stats = await runComprehensiveBackfill(env, logger, {
       daysBack: 30, // Last 30 days on each run
@@ -70,5 +80,18 @@ export async function runScheduledTasks(env: Env, logger: Logger): Promise<void>
   } catch (error) {
     logger.error('Error in scheduled comprehensive backfill', error);
     throw error;
+  }
+
+  await runAggregationJobs(env, logger);
+
+  const healthTimer = logger.startTimer('system.health');
+  try {
+    const summary = await runSystemHealthChecks(env, logger);
+    healthTimer('success', {
+      degradedChecks: summary.checks.filter((check) => check.status !== 'ok').length,
+    });
+  } catch (error) {
+    healthTimer('error', {}, error);
+    logger.error('System health checks failed', error);
   }
 }
