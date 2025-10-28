@@ -36,6 +36,8 @@ export class NotionClient {
   private messagesDatabaseId: string;
   private canvasDatabaseId: string;
   private mailDatabaseId: string;
+  private fundingDatabaseId?: string;
+  private batchesDatabaseId?: string;
   private logger: Logger;
 
   constructor(env: Env, logger: Logger) {
@@ -44,6 +46,8 @@ export class NotionClient {
     const messagesDatabaseId = env.NOTION_MESSAGES_DATABASE_ID?.trim();
     const canvasDatabaseId = env.NOTION_CANVAS_DATABASE_ID?.trim();
     const mailDatabaseId = env.NOTION_MAIL_DATABASE_ID?.trim();
+    const fundingDatabaseId = env.NOTION_FUNDING_DATABASE_ID?.trim();
+    const batchesDatabaseId = env.NOTION_BATCHES_DATABASE_ID?.trim();
 
     if (!notionApiKey) {
       throw new Error('NOTION_API_KEY is missing or empty');
@@ -70,7 +74,41 @@ export class NotionClient {
     this.messagesDatabaseId = messagesDatabaseId;
     this.canvasDatabaseId = canvasDatabaseId;
     this.mailDatabaseId = mailDatabaseId;
+    this.fundingDatabaseId = fundingDatabaseId || undefined;
+    this.batchesDatabaseId = batchesDatabaseId || undefined;
     this.logger = logger;
+  }
+
+  getCallsDatabaseId(): string {
+    return this.callsDatabaseId;
+  }
+
+  getMessagesDatabaseId(): string {
+    return this.messagesDatabaseId;
+  }
+
+  getMailDatabaseId(): string {
+    return this.mailDatabaseId;
+  }
+
+  getFundingDatabaseId(required = false): string | null {
+    if (!this.fundingDatabaseId) {
+      if (required) {
+        throw new Error('NOTION_FUNDING_DATABASE_ID is required for this operation');
+      }
+      return null;
+    }
+    return this.fundingDatabaseId;
+  }
+
+  getBatchesDatabaseId(required = false): string | null {
+    if (!this.batchesDatabaseId) {
+      if (required) {
+        throw new Error('NOTION_BATCHES_DATABASE_ID is required for this operation');
+      }
+      return null;
+    }
+    return this.batchesDatabaseId;
   }
 
   /**
