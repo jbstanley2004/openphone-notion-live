@@ -35,6 +35,7 @@ export interface Env {
   OPENPHONE_API_BASE: string;
   LOG_LEVEL: 'debug' | 'info' | 'warn' | 'error';
   WEBHOOK_PATH: string;
+  SELF_PHONE_NUMBERS?: string; // JSON array or comma/newline separated list of internal numbers
 
   // ========================================================================
   // Bindings

@@ -335,10 +335,24 @@ Edit `wrangler.jsonc` to customize:
   "vars": {
     "OPENPHONE_API_BASE": "https://api.openphone.com/v1",
     "LOG_LEVEL": "info",  // debug, info, warn, error
-    "WEBHOOK_PATH": "/webhooks/openphone"
+    "WEBHOOK_PATH": "/webhooks/openphone",
+    "SELF_PHONE_NUMBERS": "[]"  // optional: JSON array or comma/newline separated list of your own numbers
   }
 }
 ```
+
+#### Configuring `SELF_PHONE_NUMBERS`
+
+Provide the OpenPhone numbers that belong to your organization so the sync can ignore them when
+resolving Canvas relations. Accepted formats:
+
+- JSON array string: `"[\"+14155551212\", \"+14155550000\"]"`
+- Comma-separated string: `"+14155551212, +14155550000"`
+- Newline-separated string
+
+If this variable is omitted or empty, the worker will gracefully fall back to searching Canvas for
+all participants. When populated, both 10-digit and `+1`-prefixed variants are normalized
+automatically, so you only need to list each number once.
 
 ### Cron Schedule
 

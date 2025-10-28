@@ -28,8 +28,6 @@ import {
 } from '../types/notion';
 import { Logger } from './logger';
 
-const MY_PHONE_NUMBER = '+13365185544';
-
 export class NotionClient {
   private client: NotionFetchClient;
   private callsDatabaseId: string;
@@ -39,8 +37,10 @@ export class NotionClient {
   private fundingDatabaseId?: string;
   private batchesDatabaseId?: string;
   private logger: Logger;
+  private selfPhoneNumbers: Set<string>;
 
   constructor(env: Env, logger: Logger) {
+    this.logger = logger;
     const notionApiKey = env.NOTION_API_KEY?.trim();
     const callsDatabaseId = env.NOTION_CALLS_DATABASE_ID?.trim();
     const messagesDatabaseId = env.NOTION_MESSAGES_DATABASE_ID?.trim();
@@ -76,7 +76,17 @@ export class NotionClient {
     this.mailDatabaseId = mailDatabaseId;
     this.fundingDatabaseId = fundingDatabaseId || undefined;
     this.batchesDatabaseId = batchesDatabaseId || undefined;
-    this.logger = logger;
+    this.selfPhoneNumbers = this.parseSelfPhoneNumbers(env.SELF_PHONE_NUMBERS);
+
+    if (this.selfPhoneNumbers.size === 0) {
+      this.logger.info(
+        'SELF_PHONE_NUMBERS not configured; Canvas resolution will not filter out internal numbers'
+      );
+    } else {
+      this.logger.debug('Loaded SELF_PHONE_NUMBERS configuration', {
+        count: this.selfPhoneNumbers.size,
+      });
+    }
   }
 
   getCallsDatabaseId(): string {
@@ -152,11 +162,18 @@ export class NotionClient {
    * Resolve Canvas relation for a call
    */
   async resolveCanvasForCall(call: Call): Promise<string | null> {
-    const otherParticipants = call.participants.filter((participant) => {
-      const normalized = participant.replace(/\D/g, '');
-      const myNormalized = MY_PHONE_NUMBER.replace(/\D/g, '');
-      return normalized !== myNormalized;
-    });
+    const otherParticipants = call.participants.filter(
+      (participant) => !this.isSelfPhoneNumber(participant)
+    );
+
+    if (otherParticipants.length !== call.participants.length) {
+      const skippedParticipants = call.participants.filter((participant) =>
+        this.isSelfPhoneNumber(participant)
+      );
+      this.logger.debug('Skipping Canvas lookup for internal phone numbers', {
+        skippedParticipants,
+      });
+    }
 
     this.logger.info('Resolving Canvas for call participants', {
       callId: call.id,
@@ -199,11 +216,8 @@ export class NotionClient {
       return null;
     }
 
-    const normalized = phoneToLookup.replace(/\D/g, '');
-    const myNormalized = MY_PHONE_NUMBER.replace(/\D/g, '');
-
-    if (normalized === myNormalized) {
-      this.logger.warn('Skipping Canvas lookup for own phone number', {
+    if (this.isSelfPhoneNumber(phoneToLookup)) {
+      this.logger.warn('Skipping Canvas lookup for configured internal phone number', {
         phoneNumber: phoneToLookup,
       });
       return null;
@@ -917,5 +931,82 @@ export class NotionClient {
     }
 
     return result;
+  }
+
+  private parseSelfPhoneNumbers(rawValue?: string): Set<string> {
+    const normalizedNumbers = new Set<string>();
+
+    if (!rawValue) {
+      return normalizedNumbers;
+    }
+
+    const trimmed = rawValue.trim();
+    if (!trimmed) {
+      return normalizedNumbers;
+    }
+
+    let entries: string[] = [];
+
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          entries = parsed
+            .map((value) => (typeof value === 'string' ? value : value != null ? String(value) : ''))
+            .filter((value) => value.trim().length > 0);
+        } else {
+          this.logger.warn('SELF_PHONE_NUMBERS JSON value is not an array; falling back to comma parsing');
+        }
+      } catch (error) {
+        this.logger.warn('Failed to parse SELF_PHONE_NUMBERS as JSON array; falling back to comma parsing', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (entries.length === 0) {
+      entries = trimmed
+        .split(/[\n,]/)
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0);
+    }
+
+    for (const entry of entries) {
+      const variants = this.normalizePhoneNumberVariants(entry);
+      for (const variant of variants) {
+        normalizedNumbers.add(variant);
+      }
+    }
+
+    return normalizedNumbers;
+  }
+
+  private normalizePhoneNumberVariants(phoneNumber: string): string[] {
+    if (!phoneNumber) {
+      return [];
+    }
+
+    const digitsOnly = phoneNumber.replace(/\D/g, '');
+    if (!digitsOnly) {
+      return [];
+    }
+
+    const variants = new Set<string>();
+    variants.add(digitsOnly);
+
+    if (digitsOnly.length === 11 && digitsOnly.startsWith('1')) {
+      variants.add(digitsOnly.substring(1));
+    }
+
+    return Array.from(variants);
+  }
+
+  private isSelfPhoneNumber(phoneNumber?: string | null): boolean {
+    if (!phoneNumber || this.selfPhoneNumbers.size === 0) {
+      return false;
+    }
+
+    const variants = this.normalizePhoneNumberVariants(phoneNumber);
+    return variants.some((variant) => this.selfPhoneNumbers.has(variant));
   }
 }
