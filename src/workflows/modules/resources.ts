@@ -215,7 +215,7 @@ export function createNotionResources(env: Env, logger: Logger): NotionResources
 }
 
 export function createR2Client(env: Env, logger: Logger): R2Client {
-  return new R2Client(env.RECORDINGS_BUCKET, logger);
+  return new R2Client(env.RECORDINGS_BUCKET, logger, env.RECORDINGS_PUBLIC_BASE_URL);
 }
 
 export function createNotionClient(env: Env, logger: Logger): NotionClient {

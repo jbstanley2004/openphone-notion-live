@@ -336,10 +336,14 @@ Edit `wrangler.jsonc` to customize:
     "OPENPHONE_API_BASE": "https://api.openphone.com/v1",
     "LOG_LEVEL": "info",  // debug, info, warn, error
     "WEBHOOK_PATH": "/webhooks/openphone",
-    "SELF_PHONE_NUMBERS": "[]"  // optional: JSON array or comma/newline separated list of your own numbers
+    "SELF_PHONE_NUMBERS": "[]",  // optional: JSON array or comma/newline separated list of your own numbers
+    "RECORDINGS_PUBLIC_BASE_URL": "https://media.yourdomain.com"  // optional when your bucket issues signed URLs
   }
 }
 ```
+
+If your R2 bucket is not fronted by a public domain, omit `RECORDINGS_PUBLIC_BASE_URL` and the worker will fall back to
+Workers Signed URLs (requires R2 support for `createSignedUrl`).
 
 #### Configuring `SELF_PHONE_NUMBERS`
 

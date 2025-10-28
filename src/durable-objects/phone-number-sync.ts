@@ -269,7 +269,11 @@ export class PhoneNumberSync {
       const rateLimiter = new RateLimiter(env.RATE_LIMITS, this.logger);
       const openPhoneClient = new OpenPhoneClient(env, this.logger, rateLimiter);
       const notionClient = new NotionClient(env, this.logger);
-      const r2Client = new R2Client(env.RECORDINGS_BUCKET, this.logger);
+      const r2Client = new R2Client(
+        env.RECORDINGS_BUCKET,
+        this.logger,
+        env.RECORDINGS_PUBLIC_BASE_URL
+      );
 
       // Fetch only NEW calls since last sync
       const since = new Date(this.state.lastCallSync).toISOString();
