@@ -43,7 +43,12 @@ vi.mock('../modules/merchant-interaction', () => ({
   publishMerchantInteraction: vi.fn(),
 }));
 
-const { notionClientMock, createNotionClientMock } = vi.hoisted(() => {
+const {
+  notionClientMock,
+  createNotionClientMock,
+  createNotionResourcesMock,
+  getCachedCanvasMock,
+} = vi.hoisted(() => {
   const mock = {
     mailPageExists: vi.fn<[string], Promise<string | null>>(),
     createMailPage: vi.fn<[Mail], Promise<string>>(),
@@ -53,11 +58,17 @@ const { notionClientMock, createNotionClientMock } = vi.hoisted(() => {
   return {
     notionClientMock: mock,
     createNotionClientMock: vi.fn(() => mock),
+    getCachedCanvasMock: vi.fn(),
+    createNotionResourcesMock: vi.fn(() => ({
+      client: mock,
+      getCachedCanvas: getCachedCanvasMock,
+    })),
   };
 });
 
 vi.mock('../modules/resources', () => ({
   createNotionClient: createNotionClientMock,
+  createNotionResources: createNotionResourcesMock,
 }));
 
 const analyzeMailWithAIMock = vi.mocked(analyzeMailWithAI);
@@ -103,10 +114,16 @@ describe('MailProcessingWorkflow', () => {
     publishMerchantInteractionMock.mockResolvedValue(undefined);
     createNotionClientMock.mockClear();
     createNotionClientMock.mockReturnValue(notionClientMock);
+    createNotionResourcesMock.mockClear();
+    createNotionResourcesMock.mockReturnValue({
+      client: notionClientMock,
+      getCachedCanvas: getCachedCanvasMock,
+    });
 
     notionClientMock.mailPageExists.mockReset();
     notionClientMock.createMailPage.mockReset();
     notionClientMock.updateMailPage.mockReset();
+    getCachedCanvasMock.mockReset();
     analyzeMailWithAIMock.mockClear();
     indexMailMock.mockClear();
     resolveMerchantContextForMailMock.mockClear();

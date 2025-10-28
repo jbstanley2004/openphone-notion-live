@@ -18,7 +18,8 @@
     "OPENPHONE_API_BASE": "https://api.openphone.com/v1",
     "LOG_LEVEL": "info",
     "WEBHOOK_PATH": "/webhooks/openphone",
-    "SELF_PHONE_NUMBERS": "[]" // Optional: JSON array or comma-separated list of internal numbers
+    "SELF_PHONE_NUMBERS": "[]", // Optional: JSON array or comma-separated list of internal numbers
+    "RECORDINGS_PUBLIC_BASE_URL": "https://media.yourdomain.com" // Optional: set when serving recordings from a public domain
   },
 
   // R2 bucket for storing call recordings

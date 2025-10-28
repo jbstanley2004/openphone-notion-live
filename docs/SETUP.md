@@ -266,6 +266,7 @@ OPENPHONE_API_KEY=sk_your_openphone_key_here
 NOTION_API_KEY=secret_your_notion_key_here
 NOTION_CALLS_DATABASE_ID=your_calls_database_id_here
 NOTION_MESSAGES_DATABASE_ID=your_messages_database_id_here
+RECORDINGS_PUBLIC_BASE_URL=https://media.yourdomain.com
 ```
 
 Set production secrets:
@@ -283,6 +284,10 @@ wrangler secret put NOTION_CALLS_DATABASE_ID
 wrangler secret put NOTION_MESSAGES_DATABASE_ID
 # Paste your database ID when prompted
 ```
+
+If your R2 bucket is fronted by a public domain, set `RECORDINGS_PUBLIC_BASE_URL` in `wrangler.jsonc` (or `.dev.vars` for
+local development) to the HTTPS origin that serves uploaded recordings. When omitted, the worker automatically generates
+Workers Signed URLs using `createSignedUrl`.
 
 ---
 

@@ -36,6 +36,7 @@ export interface Env {
   LOG_LEVEL: 'debug' | 'info' | 'warn' | 'error';
   WEBHOOK_PATH: string;
   SELF_PHONE_NUMBERS?: string; // JSON array or comma/newline separated list of internal numbers
+  RECORDINGS_PUBLIC_BASE_URL?: string; // Base URL for accessing uploaded recordings
 
   // ========================================================================
   // Bindings
