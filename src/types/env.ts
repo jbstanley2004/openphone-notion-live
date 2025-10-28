@@ -96,6 +96,7 @@ export interface SyncState {
   status: 'pending' | 'in_progress' | 'completed' | 'failed';
   notionPageId?: string;
   merchantUuid?: string | null;
+  canvasId?: string | null;
   attempts: number;
   lastAttempt: string; // ISO 8601
   error?: string;

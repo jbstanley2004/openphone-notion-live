@@ -182,7 +182,16 @@ export class PhoneAgent {
       }
 
       // Index in Vectorize for semantic search
-      await indexCall(call, transcript, aiAnalysis.summary, notionPageId, merchantUuid, this.env, this.logger);
+      await indexCall(
+        call,
+        transcript,
+        aiAnalysis.summary,
+        notionPageId,
+        merchantUuid,
+        canvasId ?? null,
+        this.env,
+        this.logger
+      );
 
       // Find similar calls (duplicate lead detection)
       const similarCalls = await findSimilarCalls(call.id, 3, this.env, this.logger);

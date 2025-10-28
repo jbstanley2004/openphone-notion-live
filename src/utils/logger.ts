@@ -66,16 +66,56 @@ export class Logger {
     this.log('warn', message, data);
   }
 
-  error(message: string, error?: Error | any) {
-    const errorData = error instanceof Error
+  error(message: string, error?: Error | any, data?: any) {
+    const errorPayload = error instanceof Error
       ? {
-          error: error.message,
-          stack: error.stack,
-          name: error.name,
+          error: {
+            message: error.message,
+            stack: error.stack,
+            name: error.name,
+          },
         }
-      : { error };
+      : error
+        ? { error }
+        : {};
 
-    this.log('error', message, errorData);
+    const combinedData = data ? { ...data, ...errorPayload } : errorPayload;
+    this.log('error', message, combinedData);
+  }
+
+  startTimer(metric: string, metadata: Record<string, any> = {}) {
+    const start = Date.now();
+
+    return (
+      status: 'success' | 'error',
+      extra: Record<string, any> = {},
+      error?: Error | any,
+    ) => {
+      const durationMs = Date.now() - start;
+      const payload = { metric, status, durationMs, ...metadata, ...extra };
+
+      if (status === 'error' && error) {
+        this.error(`Timer ${metric} failed`, error, payload);
+        return;
+      }
+
+      this.info(`Timer ${metric} completed`, payload);
+    };
+  }
+
+  logWorkflowStep(
+    workflowName: string,
+    stepName: string,
+    state: 'start' | 'success' | 'failure',
+    context: Record<string, any> = {},
+  ) {
+    const data = { workflow: workflowName, step: stepName, state, ...context };
+
+    if (state === 'failure') {
+      this.warn('Workflow step failure', data);
+    } else {
+      this.info('Workflow step', data);
+    }
   }
 
   withContext(additionalContext: LogContext): Logger {

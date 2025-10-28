@@ -20,6 +20,24 @@ import { NotionClient } from '../utils/notion-client';
 import { R2Client } from '../utils/r2-client';
 import { RateLimiter } from '../utils/rate-limiter';
 
+type CanvasLookupType = 'phone' | 'email';
+
+const normalizeCanvasLookup = (lookup: string, type: CanvasLookupType): string => {
+  if (!lookup) {
+    return '';
+  }
+
+  if (type === 'phone') {
+    return lookup.replace(/\D/g, '');
+  }
+
+  return lookup.trim().toLowerCase();
+};
+
+const buildCanvasCacheKey = (normalizedLookup: string, type: CanvasLookupType): string => {
+  return `${type}:${normalizedLookup}`;
+};
+
 interface CanvasCacheEntry {
   canvasId: string | null;
   merchantUuid: string | null;
@@ -58,22 +76,36 @@ export class PhoneNumberSync {
     const stored = await this.ctx.storage.get<PhoneNumberState>('state');
 
     if (stored) {
-      const convertedCache: Record<string, CanvasCacheEntry> = {};
-      for (const [key, value] of Object.entries(stored.canvasCache || {})) {
-        if (typeof value === 'string') {
-          convertedCache[key] = { canvasId: value, merchantUuid: null };
-        } else if (value && typeof value === 'object' && 'canvasId' in value) {
-          const entry = value as any;
-          convertedCache[key] = {
-            canvasId: entry.canvasId,
-            merchantUuid: entry.merchantUuid ?? null,
-          };
+      const normalizedCache: Record<string, CanvasCacheEntry> = {};
+      for (const [rawKey, rawValue] of Object.entries(stored.canvasCache || {})) {
+        const [maybeType, originalLookup = ''] = rawKey.split(':', 2);
+        const lookupType: CanvasLookupType = maybeType === 'email' ? 'email' : 'phone';
+        const normalizedLookup = normalizeCanvasLookup(originalLookup, lookupType);
+
+        if (!normalizedLookup) {
+          continue;
         }
+
+        const cacheKey = buildCanvasCacheKey(normalizedLookup, lookupType);
+        const entry: CanvasCacheEntry = typeof rawValue === 'string'
+          ? { canvasId: rawValue, merchantUuid: null }
+          : {
+              canvasId:
+                rawValue && typeof rawValue === 'object' && 'canvasId' in rawValue
+                  ? (rawValue as any).canvasId ?? null
+                  : null,
+              merchantUuid:
+                rawValue && typeof rawValue === 'object' && 'merchantUuid' in rawValue
+                  ? (rawValue as any).merchantUuid ?? null
+                  : null,
+            };
+
+        normalizedCache[cacheKey] = entry;
       }
 
       this.state = {
         ...stored,
-        canvasCache: convertedCache,
+        canvasCache: normalizedCache,
       };
       this.logger = this.logger.withContext({ phoneNumberId: this.state.phoneNumberId });
       this.logger.info('Loaded state from durable storage', {
@@ -120,13 +152,20 @@ export class PhoneNumberSync {
    */
   private async getCanvasId(
     lookup: string,
-    type: 'phone' | 'email',
+    type: CanvasLookupType,
     notionClient: NotionClient
   ): Promise<CanvasCacheEntry | null> {
     if (!this.state) return null;
 
+    const normalizedLookup = normalizeCanvasLookup(lookup, type);
+
+    if (!normalizedLookup) {
+      this.logger.warn('Canvas lookup missing normalized value', { lookup, type });
+      return null;
+    }
+
     // Check in-memory cache first
-    const cacheKey = `${type}:${lookup}`;
+    const cacheKey = buildCanvasCacheKey(normalizedLookup, type);
     if (this.state.canvasCache[cacheKey]) {
       const cachedEntry = this.state.canvasCache[cacheKey];
 
@@ -141,19 +180,20 @@ export class PhoneNumberSync {
 
       this.logger.info('Canvas cache hit', {
         lookup,
+        normalizedLookup,
         type,
         canvasId: cachedEntry.canvasId,
         merchantUuid: cachedEntry.merchantUuid,
       });
 
       // Update D1 cache stats (async, don't wait)
-      this.ctx.waitUntil(this.updateCanvasCacheHit(lookup, type));
+      this.ctx.waitUntil(this.updateCanvasCacheHit(normalizedLookup, type));
 
       return cachedEntry;
     }
 
     // Cache miss - query Notion
-    this.logger.info('Canvas cache miss, querying Notion', { lookup, type });
+    this.logger.info('Canvas cache miss, querying Notion', { lookup, normalizedLookup, type });
     const startTime = Date.now();
 
     let canvasId: string | null = null;
@@ -177,12 +217,19 @@ export class PhoneNumberSync {
       await this.saveState();
 
       // Log to D1 (async)
-      this.ctx.waitUntil(this.logCanvasCache(lookup, type, cacheEntry));
+      this.ctx.waitUntil(
+        this.logCanvasCache(normalizedLookup, type, cacheEntry, { source: 'notion' })
+      );
+      this.ctx.waitUntil(
+        this.logPerformanceMetric('canvas_lookup', type, duration, true)
+      );
       return cacheEntry;
     }
 
     // Log performance metric
-    this.ctx.waitUntil(this.logPerformanceMetric('canvas_lookup', type, duration, !!canvasId));
+    this.ctx.waitUntil(
+      this.logPerformanceMetric('canvas_lookup', type, duration, false)
+    );
 
     return null;
   }
@@ -431,23 +478,32 @@ export class PhoneNumberSync {
   }
 
   private async logCanvasCache(
-    lookup: string,
-    type: string,
-    entry: CanvasCacheEntry
+    normalizedLookup: string,
+    type: CanvasLookupType,
+    entry: CanvasCacheEntry,
+    metadata: { source: string; canvasName?: string } = { source: 'notion' }
   ): Promise<void> {
     const now = Date.now();
     await this.logToD1('canvas_cache', {
-      lookup_key: lookup,
+      lookup_key: normalizedLookup,
       lookup_type: type,
       canvas_id: entry.canvasId,
+      canvas_name: metadata.canvasName ?? null,
       merchant_uuid: entry.merchantUuid,
       cached_at: now,
       hit_count: 1,
       last_used_at: now,
     });
+    this.logger.info('Canvas cache entry stored', {
+      lookup: normalizedLookup,
+      type,
+      canvasId: entry.canvasId,
+      merchantUuid: entry.merchantUuid,
+      source: metadata.source,
+    });
   }
 
-  private async updateCanvasCacheHit(lookup: string, type: string): Promise<void> {
+  private async updateCanvasCacheHit(lookup: string, type: CanvasLookupType): Promise<void> {
     try {
       await this.env.DB.prepare(
         `UPDATE canvas_cache SET hit_count = hit_count + 1, last_used_at = ? WHERE lookup_key = ?`

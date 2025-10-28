@@ -46,6 +46,8 @@ export interface MerchantUuidGap {
   merchantName?: string | null;
 }
 
+const MY_PHONE_NUMBER = '+13365185544';
+
 export class NotionClient {
   private client: NotionFetchClient;
   private callsDatabaseId: string;
@@ -789,7 +791,6 @@ export class NotionClient {
     let canvasId: string | null = null;
 
     // Filter out my own phone number to avoid matching my own Canvas record
-    const MY_PHONE_NUMBER = '+13365185544';
     const otherParticipants = call.participants.filter(p => {
       const normalized = p.replace(/\D/g, '');
       const myNormalized = MY_PHONE_NUMBER.replace(/\D/g, '');
@@ -960,7 +961,6 @@ export class NotionClient {
 
     let canvasId: string | null = null;
 
-    const MY_PHONE_NUMBER = '+13365185544';
     const otherParticipants = call.participants.filter(p => {
       const normalized = p.replace(/\D/g, '');
       const myNormalized = MY_PHONE_NUMBER.replace(/\D/g, '');

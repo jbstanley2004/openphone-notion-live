@@ -52,28 +52,27 @@ export class CallProcessingWorkflow {
 
     const workflowName = 'call-processing';
     const workflowContext = { callId, phoneNumberId };
+    const finishWorkflow = logger.startTimer(`workflow.${workflowName}`, workflowContext);
 
-    logger.info('Starting call processing workflow', workflowContext);
+    logger.logWorkflowStep(workflowName, 'workflow', 'start', workflowContext);
 
     const runStep = async <T>(stepName: string, fn: () => Promise<T>): Promise<T> => {
-      const stepStart = Date.now();
-      logger.info('Workflow step started', {
-        workflow: workflowName,
-        step: stepName,
-        ...workflowContext,
-      });
+      const stepContext = { ...workflowContext, step: stepName };
+      logger.logWorkflowStep(workflowName, stepName, 'start', stepContext);
+      const finishStep = logger.startTimer(`workflow.${workflowName}.${stepName}`, stepContext);
 
       try {
         const result = await step.do(stepName, async () => fn());
-        logger.info('Workflow step completed', {
-          workflow: workflowName,
-          step: stepName,
-          durationMs: Date.now() - stepStart,
-          ...workflowContext,
-        });
+        finishStep('success');
+        logger.logWorkflowStep(workflowName, stepName, 'success', stepContext);
         return result;
       } catch (error) {
-        logger.error('Workflow step failed', error);
+        finishStep('error', {}, error);
+        logger.logWorkflowStep(workflowName, stepName, 'failure', stepContext);
+        logger.error('Workflow step failed', error, {
+          workflow: workflowName,
+          ...stepContext,
+        });
         throw error;
       }
     };
@@ -236,7 +235,16 @@ export class CallProcessingWorkflow {
         logger.info('Indexing in Vectorize', { callId });
 
         const transcript = call.voicemail?.transcription ?? undefined;
-        await indexCall(call.call, transcript, analysis.summary, notionPageId, merchantUuid, env, logger);
+        await indexCall(
+          call.call,
+          transcript,
+          analysis.summary,
+          notionPageId,
+          merchantUuid,
+          finalCanvasId ?? null,
+          env,
+          logger
+        );
 
         logger.info('Indexed in Vectorize', { callId });
       });
@@ -248,6 +256,12 @@ export class CallProcessingWorkflow {
         sentiment: analysis.sentiment.label,
         leadScore: analysis.leadScore,
       });
+      logger.logWorkflowStep(workflowName, 'workflow', 'success', {
+        ...workflowContext,
+        notionPageId,
+        canvasId: finalCanvasId,
+      });
+      finishWorkflow('success', { notionPageId, canvasId: finalCanvasId });
       return {
         callId,
         notionPageId,
@@ -258,7 +272,9 @@ export class CallProcessingWorkflow {
         merchantUuid,
       };
     } catch (error) {
-      logger.error('Call processing workflow failed', error);
+      finishWorkflow('error', {}, error);
+      logger.logWorkflowStep(workflowName, 'workflow', 'failure', workflowContext);
+      logger.error('Call processing workflow failed', error, workflowContext);
       throw error;
     }
   }
@@ -276,28 +292,27 @@ export class MessageProcessingWorkflow {
 
     const workflowName = 'message-processing';
     const workflowContext = { messageId };
+    const finishWorkflow = logger.startTimer(`workflow.${workflowName}`, workflowContext);
 
-    logger.info('Starting message processing workflow', workflowContext);
+    logger.logWorkflowStep(workflowName, 'workflow', 'start', workflowContext);
 
     const runStep = async <T>(stepName: string, fn: () => Promise<T>): Promise<T> => {
-      const stepStart = Date.now();
-      logger.info('Workflow step started', {
-        workflow: workflowName,
-        step: stepName,
-        ...workflowContext,
-      });
+      const stepContext = { ...workflowContext, step: stepName };
+      logger.logWorkflowStep(workflowName, stepName, 'start', stepContext);
+      const finishStep = logger.startTimer(`workflow.${workflowName}.${stepName}`, stepContext);
 
       try {
         const result = await step.do(stepName, async () => fn());
-        logger.info('Workflow step completed', {
-          workflow: workflowName,
-          step: stepName,
-          durationMs: Date.now() - stepStart,
-          ...workflowContext,
-        });
+        finishStep('success');
+        logger.logWorkflowStep(workflowName, stepName, 'success', stepContext);
         return result;
       } catch (error) {
-        logger.error('Workflow step failed', error);
+        finishStep('error', {}, error);
+        logger.logWorkflowStep(workflowName, stepName, 'failure', stepContext);
+        logger.error('Workflow step failed', error, {
+          workflow: workflowName,
+          ...stepContext,
+        });
         throw error;
       }
     };
@@ -389,7 +404,15 @@ export class MessageProcessingWorkflow {
         logger.info('Indexing message in Vectorize', { messageId });
 
         const { indexMessage } = await import('../utils/vector-search');
-        await indexMessage(message, analysis.summary, notionPageId, merchantUuid, env, logger);
+        await indexMessage(
+          message,
+          analysis.summary,
+          notionPageId,
+          merchantUuid,
+          finalCanvasId ?? null,
+          env,
+          logger
+        );
 
         logger.info('Message indexed in Vectorize', { messageId });
       });
@@ -399,6 +422,12 @@ export class MessageProcessingWorkflow {
         notionPageId,
         canvasId: finalCanvasId,
       });
+      logger.logWorkflowStep(workflowName, 'workflow', 'success', {
+        ...workflowContext,
+        notionPageId,
+        canvasId: finalCanvasId,
+      });
+      finishWorkflow('success', { notionPageId, canvasId: finalCanvasId });
       return {
         messageId,
         notionPageId,
@@ -407,7 +436,9 @@ export class MessageProcessingWorkflow {
         merchantUuid,
       };
     } catch (error) {
-      logger.error('Message processing workflow failed', error);
+      finishWorkflow('error', {}, error);
+      logger.logWorkflowStep(workflowName, 'workflow', 'failure', workflowContext);
+      logger.error('Message processing workflow failed', error, workflowContext);
       throw error;
     }
   }

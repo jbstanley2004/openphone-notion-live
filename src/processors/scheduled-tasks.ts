@@ -7,6 +7,7 @@ import type { Env } from '../types/env';
 import { Logger } from '../utils/logger';
 import { runComprehensiveBackfill } from './comprehensive-backfill';
 import { NotionClient } from '../utils/notion-client';
+import { replicateCanvasCacheToKV } from './canvas-cache-replicator';
 
 /**
  * Run all scheduled tasks
@@ -21,6 +22,8 @@ export async function runScheduledTasks(env: Env, logger: Logger): Promise<void>
   logger.info('Starting scheduled comprehensive backfill');
 
   try {
+    await replicateCanvasCacheToKV(env, logger);
+
     // Run comprehensive backfill with full AI and vectorization
     const stats = await runComprehensiveBackfill(env, logger, {
       daysBack: 30, // Last 30 days on each run

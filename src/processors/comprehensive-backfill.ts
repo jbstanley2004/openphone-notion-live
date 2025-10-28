@@ -321,13 +321,21 @@ async function backfillCallsDatabase(
                     aiAnalysis?.summary,
                     notionPageId,
                     merchantUuid,
+                    canvasIdForLog || null,
                     env,
                     logger
                   );
                   logger.info('Call vectorized', { callId: call.id });
                 }
 
-                await markAsSynced(env.SYNC_STATE, call.id, 'call', notionPageId, merchantUuid);
+                await markAsSynced(
+                  env.SYNC_STATE,
+                  call.id,
+                  'call',
+                  notionPageId,
+                  merchantUuid,
+                  canvasIdForLog || null
+                );
                 synced++;
                 logger.info('Call backfilled successfully', {
                   callId: call.id,
@@ -486,12 +494,20 @@ async function backfillMessagesDatabase(
                     aiAnalysis?.summary,
                     notionPageId,
                     merchantUuid,
+                    canvasIdForLog || null,
                     env,
                     logger
                   );
                 }
 
-                await markAsSynced(env.SYNC_STATE, message.id, 'message', notionPageId, merchantUuid);
+                await markAsSynced(
+                  env.SYNC_STATE,
+                  message.id,
+                  'message',
+                  notionPageId,
+                  merchantUuid,
+                  canvasIdForLog || null
+                );
                 synced++;
                 logger.info('Message backfilled successfully', {
                   messageId: message.id,

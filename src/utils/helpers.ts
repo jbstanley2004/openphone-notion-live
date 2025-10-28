@@ -96,7 +96,8 @@ export async function markAsSynced(
   resourceId: string,
   resourceType: 'call' | 'message',
   notionPageId: string,
-  merchantUuid?: string | null
+  merchantUuid?: string | null,
+  canvasId?: string | null
 ): Promise<void> {
   const state: SyncState = {
     resourceId,
@@ -104,9 +105,16 @@ export async function markAsSynced(
     status: 'completed',
     notionPageId,
     merchantUuid: merchantUuid ?? null,
+    canvasId: canvasId ?? null,
     attempts: 1,
     lastAttempt: new Date().toISOString(),
-    metadata: merchantUuid ? { merchantUuid } : undefined,
+    metadata:
+      merchantUuid || canvasId
+        ? {
+            ...(merchantUuid ? { merchantUuid } : {}),
+            ...(canvasId ? { canvasId } : {}),
+          }
+        : undefined,
   };
   await setSyncState(kv, state);
 }

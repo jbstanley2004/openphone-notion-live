@@ -25,6 +25,7 @@ export interface VectorSearchResult {
     type: 'call' | 'message';
     direction?: string;
     merchantUuid?: string | null;
+    canvasId?: string | null;
   };
 }
 
@@ -45,6 +46,7 @@ export async function indexCall(
   summary: string | undefined,
   notionPageId: string,
   merchantUuid: string | null,
+  canvasId: string | null,
   env: Env,
   logger: Logger
 ): Promise<void> {
@@ -74,6 +76,7 @@ export async function indexCall(
           type: 'call',
           direction: call.direction,
           ...(merchantUuid ? { merchantUuid } : {}),
+          ...(canvasId ? { canvasId } : {}),
         },
       },
     ]);
@@ -95,6 +98,7 @@ export async function indexMessage(
   summary: string | undefined,
   notionPageId: string,
   merchantUuid: string | null,
+  canvasId: string | null,
   env: Env,
   logger: Logger
 ): Promise<void> {
@@ -121,6 +125,7 @@ export async function indexMessage(
           type: 'message',
           direction: message.direction,
           ...(merchantUuid ? { merchantUuid } : {}),
+          ...(canvasId ? { canvasId } : {}),
         },
       },
     ]);
