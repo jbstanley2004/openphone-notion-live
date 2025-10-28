@@ -113,9 +113,19 @@ export default {
         return await handleStatsAPI(env, logger);
       }
 
-      // Dashboard API - Semantic search endpoint
+      // Dashboard API - Semantic search endpoint (enhanced with caching)
       if (url.pathname === '/api/search' && request.method === 'POST') {
         return await handleSearchAPI(request, env, logger);
+      }
+
+      // Dashboard API - RAG search endpoint (search with AI-generated answer)
+      if (url.pathname === '/api/search/rag' && request.method === 'POST') {
+        return await handleRAGSearchAPI(request, env, logger);
+      }
+
+      // Dashboard API - Query rewriting endpoint
+      if (url.pathname === '/api/search/rewrite' && request.method === 'POST') {
+        return await handleQueryRewriteAPI(request, env, logger);
       }
 
       // Dashboard API - Cache stats endpoint
@@ -345,6 +355,122 @@ async function handleSearchAPI(
   logger: typeof createLogger extends (...args: any[]) => infer R ? R : never
 ): Promise<Response> {
   try {
+    const body = await request.json() as {
+      query: string;
+      topK?: number;
+      type?: 'call' | 'message' | 'all';
+      phoneNumber?: string;
+      dateFrom?: string;
+      dateTo?: string;
+      useCache?: boolean;
+      rewriteQuery?: boolean;
+    };
+
+    if (!body.query) {
+      return new Response(JSON.stringify({ error: 'Query required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Use enhanced search with caching by default
+    const { semanticSearchWithCache } = await import('./utils/vector-search');
+    const results = await semanticSearchWithCache(
+      body.query,
+      {
+        topK: body.topK || 10,
+        type: body.type,
+        phoneNumber: body.phoneNumber,
+        dateFrom: body.dateFrom,
+        dateTo: body.dateTo,
+        useCache: body.useCache,
+        rewriteQuery: body.rewriteQuery || false
+      },
+      env,
+      logger
+    );
+
+    return new Response(JSON.stringify({
+      results,
+      cached: results.length > 0 // Indicator if results might be cached
+    }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    logger.error('Search failed', error);
+    return new Response(JSON.stringify({ error: 'Search failed' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle RAG search API - Search with AI-generated answers
+ */
+async function handleRAGSearchAPI(
+  request: Request,
+  env: Env,
+  logger: typeof createLogger extends (...args: any[]) => infer R ? R : never
+): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      query: string;
+      topK?: number;
+      type?: 'call' | 'message' | 'all';
+      phoneNumber?: string;
+      dateFrom?: string;
+      dateTo?: string;
+      useCache?: boolean;
+      rewriteQuery?: boolean;
+      systemPrompt?: string;
+    };
+
+    if (!body.query) {
+      return new Response(JSON.stringify({ error: 'Query required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const { searchWithAnswer } = await import('./utils/vector-search');
+    const result = await searchWithAnswer(
+      body.query,
+      {
+        topK: body.topK || 5,
+        type: body.type,
+        phoneNumber: body.phoneNumber,
+        dateFrom: body.dateFrom,
+        dateTo: body.dateTo,
+        useCache: body.useCache,
+        rewriteQuery: body.rewriteQuery || false,
+        systemPrompt: body.systemPrompt
+      },
+      env,
+      logger
+    );
+
+    return new Response(JSON.stringify(result), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    logger.error('RAG search failed', error);
+    return new Response(JSON.stringify({ error: 'RAG search failed' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle query rewriting API - Optimize queries for better retrieval
+ */
+async function handleQueryRewriteAPI(
+  request: Request,
+  env: Env,
+  logger: typeof createLogger extends (...args: any[]) => infer R ? R : never
+): Promise<Response> {
+  try {
     const body = await request.json() as { query: string };
 
     if (!body.query) {
@@ -354,15 +480,18 @@ async function handleSearchAPI(
       });
     }
 
-    const { semanticSearch } = await import('./utils/vector-search');
-    const results = await semanticSearch(body.query, { topK: 10 }, env, logger);
+    const { rewriteQuery } = await import('./utils/vector-search');
+    const rewritten = await rewriteQuery(body.query, env, logger);
 
-    return new Response(JSON.stringify({ results }), {
+    return new Response(JSON.stringify({
+      original: body.query,
+      rewritten
+    }), {
       headers: { 'Content-Type': 'application/json' },
     });
   } catch (error) {
-    logger.error('Search failed', error);
-    return new Response(JSON.stringify({ error: 'Search failed' }), {
+    logger.error('Query rewriting failed', error);
+    return new Response(JSON.stringify({ error: 'Query rewriting failed' }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });
