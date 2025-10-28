@@ -1302,6 +1302,26 @@ export class NotionClient {
   }
 
   /**
+   * Retrieve a page by ID
+   */
+  async getPage(pageId: string): Promise<any> {
+    return this.client.pages.retrieve({ page_id: pageId });
+  }
+
+  /**
+   * Query a database with optional filters and sorts
+   */
+  async queryDatabase(
+    databaseId: string,
+    params: { filter?: any; sorts?: any; page_size?: number; start_cursor?: string } = {}
+  ): Promise<any> {
+    return this.client.databases.query({
+      database_id: databaseId,
+      ...params,
+    });
+  }
+
+  /**
    * Check if a call page exists
    */
   async callPageExists(callId: string): Promise<string | null> {
