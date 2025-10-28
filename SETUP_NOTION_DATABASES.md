@@ -75,6 +75,38 @@ Open the database and add these properties:
 
 ---
 
+## MAIL DATABASE SETUP
+
+### Database URL
+Provide the URL to your Mail database (copy the ID from the address bar just like the other databases).
+
+### Required Properties (Columns)
+
+Add these properties to the Mail database with the exact names and types:
+
+1. **Subject** - Type: **Title**
+2. **Message ID** - Type: **Text** (rich text)
+3. **From** - Type: **Email**
+4. **To** - Type: **Text**
+5. **CC** - Type: **Text**
+6. **BCC** - Type: **Text**
+7. **Body** - Type: **Text** (long text)
+8. **Conversation ID** - Type: **Text**
+9. **MIME Message ID** - Type: **Text**
+10. **Direction** - Type: **Select** (options: incoming, outgoing)
+11. **Status** - Type: **Select** (options: queued, sent, delivered, failed, bounced)
+12. **Created At** - Type: **Date**
+13. **Updated At** - Type: **Date**
+14. **Has Attachments** - Type: **Checkbox**
+15. **Attachments** - Type: **Text** (long text)
+16. **Canvas** - Type: **Relation** (link to Canvas database)
+17. **Raw Data** - Type: **Text** (long text)
+18. **Synced At** - Type: **Date**
+
+These identifiers (**Message ID**, **Conversation ID**, **MIME Message ID**) are required so repeat webhook events update the same page instead of creating duplicates.
+
+---
+
 ## HOW TO ADD PROPERTIES IN NOTION
 
 1. Open the database in Notion

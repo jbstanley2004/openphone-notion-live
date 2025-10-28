@@ -211,6 +211,27 @@ export interface MessagePageProperties {
   'Synced At': DateProperty;
 }
 
+export interface MailPageProperties {
+  Subject: TitleProperty;
+  'Message ID': RichTextProperty;
+  From: EmailProperty;
+  To: RichTextProperty;
+  CC: RichTextProperty;
+  BCC: RichTextProperty;
+  Body: RichTextProperty;
+  'Conversation ID': RichTextProperty;
+  'MIME Message ID': RichTextProperty;
+  Direction: SelectProperty;
+  Status: SelectProperty;
+  'Created At': DateProperty;
+  'Updated At': DateProperty;
+  'Has Attachments': CheckboxProperty;
+  Attachments: RichTextProperty;
+  Canvas: RelationProperty;
+  'Raw Data': RichTextProperty;
+  'Synced At': DateProperty;
+}
+
 // ============================================================================
 // Helper Functions for Creating Properties
 // ============================================================================

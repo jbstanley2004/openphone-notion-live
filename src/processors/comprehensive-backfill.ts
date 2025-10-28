@@ -699,6 +699,11 @@ function mapMailPageToSyncInput(page: any): MailSyncInput {
   let mailId = page.id;
   let threadId: string | undefined;
 
+  const propertyMailId = getPlainText(props['Message ID']);
+  if (propertyMailId) {
+    mailId = propertyMailId;
+  }
+
   if (rawData) {
     try {
       const parsed = JSON.parse(rawData);
@@ -716,6 +721,29 @@ function mapMailPageToSyncInput(page: any): MailSyncInput {
       }
     } catch (error) {
       metadata = undefined;
+    }
+  }
+
+  const conversationIdFromProperty = getPlainText(props['Conversation ID']);
+  if (conversationIdFromProperty) {
+    if (!threadId) {
+      threadId = conversationIdFromProperty;
+    }
+    if (!metadata) {
+      metadata = {};
+    }
+    if (metadata.conversationId === undefined) {
+      metadata.conversationId = conversationIdFromProperty;
+    }
+  }
+
+  const mimeMessageIdFromProperty = getPlainText(props['MIME Message ID']);
+  if (mimeMessageIdFromProperty) {
+    if (!metadata) {
+      metadata = {};
+    }
+    if (metadata.mimeMessageId === undefined) {
+      metadata.mimeMessageId = mimeMessageIdFromProperty;
     }
   }
 
