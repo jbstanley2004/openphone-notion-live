@@ -10,6 +10,8 @@ import {
   withMerchantUuid,
 } from '../modules/merchant';
 import { publishMerchantInteraction } from '../modules/merchant-interaction';
+import type { NotionClient } from '../../utils/notion-client';
+import type { CanvasLookupFn, NotionResources } from '../modules/resources';
 
 vi.mock('../../utils/logger', () => {
   const logger = {
@@ -45,22 +47,31 @@ vi.mock('../modules/merchant-interaction', () => ({
 
 const {
   notionClientMock,
+  notionClientInstance,
   createNotionClientMock,
   createNotionResourcesMock,
   getCachedCanvasMock,
 } = vi.hoisted(() => {
-  const mock = {
+  const notionClientMock = {
     mailPageExists: vi.fn<[string], Promise<string | null>>(),
     createMailPage: vi.fn<[Mail], Promise<string>>(),
     updateMailPage: vi.fn<[string, Mail], Promise<void>>(),
   };
 
+  const notionClientInstance = notionClientMock as unknown as NotionClient;
+
+  const getCachedCanvasMock = vi.fn<
+    Parameters<CanvasLookupFn>,
+    ReturnType<CanvasLookupFn>
+  >();
+
   return {
-    notionClientMock: mock,
-    createNotionClientMock: vi.fn(() => mock),
-    getCachedCanvasMock: vi.fn(),
-    createNotionResourcesMock: vi.fn(() => ({
-      client: mock,
+    notionClientMock,
+    notionClientInstance,
+    createNotionClientMock: vi.fn(() => notionClientInstance),
+    getCachedCanvasMock,
+    createNotionResourcesMock: vi.fn((): NotionResources => ({
+      client: notionClientInstance,
       getCachedCanvas: getCachedCanvasMock,
     })),
   };
@@ -113,10 +124,10 @@ describe('MailProcessingWorkflow', () => {
     );
     publishMerchantInteractionMock.mockResolvedValue(undefined);
     createNotionClientMock.mockClear();
-    createNotionClientMock.mockReturnValue(notionClientMock);
+    createNotionClientMock.mockReturnValue(notionClientInstance);
     createNotionResourcesMock.mockClear();
     createNotionResourcesMock.mockReturnValue({
-      client: notionClientMock,
+      client: notionClientInstance,
       getCachedCanvas: getCachedCanvasMock,
     });
 
