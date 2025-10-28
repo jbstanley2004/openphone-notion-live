@@ -338,6 +338,8 @@ Edit `wrangler.jsonc` to customize:
     "WEBHOOK_PATH": "/webhooks/openphone",
     "SELF_PHONE_NUMBERS": "[\"+13365195544\"]",  // internal number for +1 (336) 519-5544
     "RECORDINGS_PUBLIC_BASE_URL": "https://pub-358b252982f749d78ef2628cb2b3450b.r2.dev"  // public recordings origin
+    "SELF_PHONE_NUMBERS": "[]",  // optional: JSON array or comma/newline separated list of your own numbers
+    "RECORDINGS_PUBLIC_BASE_URL": "https://media.yourdomain.com"  // optional when your bucket issues signed URLs
   }
 }
 ```
