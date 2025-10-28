@@ -266,6 +266,8 @@ OPENPHONE_API_KEY=sk_your_openphone_key_here
 NOTION_API_KEY=secret_your_notion_key_here
 NOTION_CALLS_DATABASE_ID=your_calls_database_id_here
 NOTION_MESSAGES_DATABASE_ID=your_messages_database_id_here
+RECORDINGS_PUBLIC_BASE_URL=https://pub-358b252982f749d78ef2628cb2b3450b.r2.dev
+SELF_PHONE_NUMBERS=["+13365195544"]
 RECORDINGS_PUBLIC_BASE_URL=https://media.yourdomain.com
 ```
 
@@ -286,6 +288,12 @@ wrangler secret put NOTION_MESSAGES_DATABASE_ID
 ```
 
 If your R2 bucket is fronted by a public domain, set `RECORDINGS_PUBLIC_BASE_URL` in `wrangler.jsonc` (or `.dev.vars` for
+local development) to the HTTPS origin that serves uploaded recordings. For this project, use
+`https://pub-358b252982f749d78ef2628cb2b3450b.r2.dev`. When omitted, the worker automatically generates Workers Signed
+URLs using `createSignedUrl`.
+
+List any internal OpenPhone numbers in `SELF_PHONE_NUMBERS` so the sync can ignore them. This deployment should include
+`+1 (336) 519-5544`, which is expressed as `["+13365195544"]` in the `.dev.vars` example above.
 local development) to the HTTPS origin that serves uploaded recordings. When omitted, the worker automatically generates
 Workers Signed URLs using `createSignedUrl`.
 

@@ -7,6 +7,8 @@ import type { R2Bucket } from '@cloudflare/workers-types';
 import type { OpenPhoneID } from '../types/openphone';
 import { Logger } from './logger';
 
+const PERMANENT_SIGNED_URL_EXPIRY = new Date('9999-12-31T23:59:59.999Z');
+
 export class R2Client {
   private bucket: R2Bucket;
   private logger: Logger;
@@ -200,6 +202,10 @@ export class R2Client {
     }).createSignedUrl;
 
     if (typeof maybeCreateSignedUrl === 'function') {
+      const result = await maybeCreateSignedUrl.call(this.bucket, {
+        key,
+        expires: new Date(PERMANENT_SIGNED_URL_EXPIRY),
+      });
       const expires = new Date(Date.now() + 15 * 60 * 1000);
       const result = await maybeCreateSignedUrl.call(this.bucket, { key, expires });
 
