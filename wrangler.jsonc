@@ -103,9 +103,10 @@
   ],
 
   // Cron triggers for scheduled tasks
+  // Runs comprehensive backfill every 6 hours with AI analysis and vectorization
   "triggers": {
     "crons": [
-      "0 */6 * * *"  // Run every 6 hours (reduced from 15 min - Durable Objects handle most sync now)
+      "0 */6 * * *"  // Every 6 hours: backfill last 30 days with AI + vectorization + Canvas reconciliation
     ]
   },
 
