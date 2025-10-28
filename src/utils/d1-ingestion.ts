@@ -16,6 +16,8 @@ import {
   upsertMerchantFromCanvasPage,
 } from './d1-merchants';
 import type { NotionClient } from './notion-client';
+import type { MerchantInteraction } from '../types/interactions';
+import { resolveMerchantMetadata } from './merchant-metadata';
 
 interface CompleteCallData {
   call: Call;
@@ -134,18 +136,18 @@ export async function syncCallToD1(
   notionClient: NotionClient,
   logger: Logger,
   options: CallSyncOptions = {}
-): Promise<void> {
+): Promise<MerchantInteraction | null> {
   const canvasId = await notionClient.resolveCanvasForCall(completeCall.call);
   if (!canvasId) {
     logger.debug('Skipping D1 call sync - no Canvas match found', {
       callId: completeCall.call.id,
     });
-    return;
+    return null;
   }
 
   const canvasPage = await getCanvasPage(env, notionClient, canvasId, logger);
   if (!canvasPage) {
-    return;
+    return null;
   }
 
   const occurredAt = new Date(completeCall.call.createdAt).getTime();
@@ -161,6 +163,47 @@ export async function syncCallToD1(
 
   await upsertMerchantFromCanvasPage(env, logger, canvasPage, merchantContext);
 
+  const merchantMetadata = await resolveMerchantMetadata(env, logger, {
+    canvasId,
+    notionClient,
+  });
+
+  const interaction: MerchantInteraction = {
+    id: completeCall.call.id,
+    type: 'call',
+    occurredAt,
+    summary: summaryText ?? `Call ${completeCall.call.direction}`,
+    direction: completeCall.call.direction,
+    merchant: {
+      canvasId,
+      merchantUuid: merchantMetadata.merchantUuid ?? canvasId,
+      merchantName: merchantMetadata.merchantName ?? null,
+    },
+    notionPageId: options.notionPageId ?? null,
+    sources: {
+      openphoneId: completeCall.call.id,
+      phoneNumberId: completeCall.call.phoneNumberId,
+    },
+    ai: {
+      summary: summaryText,
+      sentiment,
+      sentimentScore: null,
+      actionItems: completeCall.summary?.nextSteps ?? [],
+      category: null,
+      leadScore,
+      keywords: [],
+    },
+    metadata: {
+      duration: completeCall.call.duration,
+      participants: completeCall.call.participants,
+      recordingUrl: options.recordingUrl ?? completeCall.recordings?.[0]?.url ?? null,
+      voicemailUrl: options.voicemailUrl ?? completeCall.voicemail?.url ?? null,
+      transcriptStatus: completeCall.transcript?.status ?? null,
+      nextSteps: completeCall.summary?.nextSteps ?? [],
+      jobs: completeCall.summary?.jobs ?? null,
+    },
+  };
+
   await recordInteraction(env, logger, {
     id: completeCall.call.id,
     canvasId,
@@ -172,16 +215,10 @@ export async function syncCallToD1(
     leadScore,
     notionPageId: options.notionPageId ?? null,
     openphoneId: completeCall.call.id,
-    metadata: {
-      duration: completeCall.call.duration,
-      participants: completeCall.call.participants,
-      recordingUrl: options.recordingUrl ?? completeCall.recordings?.[0]?.url ?? null,
-      voicemailUrl: options.voicemailUrl ?? completeCall.voicemail?.url ?? null,
-      transcriptStatus: completeCall.transcript?.status ?? null,
-      nextSteps: completeCall.summary?.nextSteps ?? [],
-      jobs: completeCall.summary?.jobs ?? null,
-    },
+    metadata: interaction.metadata,
   });
+
+  return interaction;
 }
 
 export async function syncMessageToD1(
@@ -190,18 +227,18 @@ export async function syncMessageToD1(
   notionClient: NotionClient,
   logger: Logger,
   options: MessageSyncOptions = {}
-): Promise<void> {
+): Promise<MerchantInteraction | null> {
   const canvasId = await notionClient.resolveCanvasForMessage(message);
   if (!canvasId) {
     logger.debug('Skipping D1 message sync - no Canvas match', {
       messageId: message.id,
     });
-    return;
+    return null;
   }
 
   const canvasPage = await getCanvasPage(env, notionClient, canvasId, logger);
   if (!canvasPage) {
-    return;
+    return null;
   }
 
   const occurredAt = new Date(message.createdAt).getTime();
@@ -215,6 +252,36 @@ export async function syncMessageToD1(
 
   await upsertMerchantFromCanvasPage(env, logger, canvasPage, merchantContext);
 
+  const merchantMetadata = await resolveMerchantMetadata(env, logger, {
+    canvasId,
+    notionClient,
+  });
+
+  const interaction: MerchantInteraction = {
+    id: message.id,
+    type: 'message',
+    occurredAt,
+    summary,
+    direction: message.direction,
+    merchant: {
+      canvasId,
+      merchantUuid: merchantMetadata.merchantUuid ?? canvasId,
+      merchantName: merchantMetadata.merchantName ?? null,
+    },
+    notionPageId: options.notionPageId ?? null,
+    sources: {
+      openphoneId: message.id,
+      phoneNumberId: message.phoneNumberId,
+    },
+    metadata: {
+      from: message.from,
+      to: message.to,
+      status: message.status,
+      media: message.media ?? [],
+      phoneNumberId: message.phoneNumberId,
+    },
+  };
+
   await recordInteraction(env, logger, {
     id: message.id,
     canvasId,
@@ -224,14 +291,10 @@ export async function syncMessageToD1(
     direction: message.direction,
     notionPageId: options.notionPageId ?? null,
     openphoneId: message.id,
-    metadata: {
-      from: message.from,
-      to: message.to,
-      status: message.status,
-      media: message.media ?? [],
-      phoneNumberId: message.phoneNumberId,
-    },
+    metadata: interaction.metadata,
   });
+
+  return interaction;
 }
 
 export async function syncMailToD1(
@@ -240,7 +303,7 @@ export async function syncMailToD1(
   notionClient: NotionClient,
   logger: Logger,
   options: MailSyncOptions = {}
-): Promise<void> {
+): Promise<MerchantInteraction | null> {
   const normalizedDirection = typeof mail.direction === 'string'
     ? mail.direction.toLowerCase()
     : undefined;
@@ -256,12 +319,12 @@ export async function syncMailToD1(
     logger.debug('Skipping D1 mail sync - no Canvas match', {
       mailId: mail.id,
     });
-    return;
+    return null;
   }
 
   const canvasPage = await getCanvasPage(env, notionClient, resolvedCanvasId, logger);
   if (!canvasPage) {
-    return;
+    return null;
   }
 
   const occurredAt = new Date(mail.createdAt).getTime();
@@ -273,6 +336,35 @@ export async function syncMailToD1(
 
   await upsertMerchantFromCanvasPage(env, logger, canvasPage, merchantContext);
 
+  const merchantMetadata = await resolveMerchantMetadata(env, logger, {
+    canvasId: resolvedCanvasId,
+    notionClient,
+  });
+
+  const interaction: MerchantInteraction = {
+    id: mail.id,
+    type: 'mail',
+    occurredAt,
+    summary: mail.subject,
+    direction: normalizedDirection ?? null,
+    merchant: {
+      canvasId: resolvedCanvasId,
+      merchantUuid: merchantMetadata.merchantUuid ?? resolvedCanvasId,
+      merchantName: merchantMetadata.merchantName ?? null,
+    },
+    notionPageId: options.notionPageId ?? null,
+    sources: {
+      mailThreadId: mail.threadId ?? null,
+    },
+    metadata: {
+      from: mail.from,
+      to: mail.to,
+      status: mail.status,
+      body: mail.body,
+      extra: mail.metadata ?? null,
+    },
+  };
+
   await recordInteraction(env, logger, {
     id: mail.id,
     canvasId: resolvedCanvasId,
@@ -281,13 +373,7 @@ export async function syncMailToD1(
     summary: mail.subject,
     direction: normalizedDirection ?? null,
     notionPageId: options.notionPageId ?? null,
-    metadata: {
-      from: mail.from,
-      to: mail.to,
-      status: mail.status,
-      body: mail.body,
-      extra: mail.metadata ?? null,
-    },
+    metadata: interaction.metadata,
   });
 
   if (mail.threadId) {
@@ -302,4 +388,6 @@ export async function syncMailToD1(
       metadata: mail.metadata ?? undefined,
     });
   }
+
+  return interaction;
 }

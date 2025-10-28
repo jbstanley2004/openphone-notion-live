@@ -7,6 +7,7 @@ import type { Env } from '../types/env';
 import { Logger } from '../utils/logger';
 import { runComprehensiveBackfill } from './comprehensive-backfill';
 import { replicateCanvasCacheToKV } from './canvas-cache-replicator';
+import { runAggregationJobs } from '../workflows/aggregation-jobs';
 
 /**
  * Run all scheduled tasks
@@ -50,4 +51,6 @@ export async function runScheduledTasks(env: Env, logger: Logger): Promise<void>
     logger.error('Error in scheduled comprehensive backfill', error);
     throw error;
   }
+
+  await runAggregationJobs(env, logger);
 }
