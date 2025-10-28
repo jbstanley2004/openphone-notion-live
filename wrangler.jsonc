@@ -117,12 +117,11 @@
 
   // Vectorize for semantic search across calls/messages
   // Automatically creates embeddings for every call/message in real-time
+  // Note: Index must be created via CLI first: npx wrangler vectorize create openphone-calls --dimensions=768 --metric=cosine
   "vectorize": [
     {
       "binding": "CALL_VECTORS",
-      "index_name": "openphone-calls",
-      "dimensions": 768,
-      "metric": "cosine"
+      "index_name": "openphone-calls"
     }
   ],
 
