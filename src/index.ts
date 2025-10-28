@@ -13,6 +13,7 @@ import type { Env, QueuedWebhookEvent } from './types/env';
 import type { WebhookEvent } from './types/openphone';
 import { createLogger } from './utils/logger';
 import { isEventProcessed, markEventProcessed } from './utils/helpers';
+import { invalidateCanvasMapping, normalizeCanvasLookup, type CanvasLookupType } from './utils/canvas-cache';
 
 // Export Durable Object
 export { PhoneNumberSync } from './durable-objects/phone-number-sync';
@@ -131,6 +132,10 @@ export default {
       // Dashboard API - Cache stats endpoint
       if (url.pathname === '/api/cache' && request.method === 'GET') {
         return await handleCacheAPI(env, logger);
+      }
+
+      if (url.pathname === '/api/canvas/cache/invalidate' && request.method === 'POST') {
+        return await handleCanvasCacheInvalidateAPI(request, env, logger);
       }
 
       // Webhook endpoint
@@ -340,6 +345,55 @@ async function handleStatsAPI(
   } catch (error) {
     logger.error('Failed to fetch stats', error);
     return new Response(JSON.stringify({ error: 'Failed to fetch stats' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+async function handleCanvasCacheInvalidateAPI(
+  request: Request,
+  env: Env,
+  logger: typeof createLogger extends (...args: any[]) => infer R ? R : never
+): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      lookup: string;
+      type: CanvasLookupType;
+      reason?: string;
+    };
+
+    if (!body.lookup || (body.type !== 'phone' && body.type !== 'email')) {
+      return new Response(JSON.stringify({ error: 'lookup and type (phone|email) are required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const normalized = normalizeCanvasLookup(body.type, body.lookup);
+    if (!normalized) {
+      return new Response(JSON.stringify({ error: 'Lookup normalized to empty value' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    await invalidateCanvasMapping(env, logger, body.type, body.lookup, body.reason);
+
+    return new Response(
+      JSON.stringify({
+        status: 'invalidated',
+        lookup: normalized,
+        type: body.type,
+        reason: body.reason || null,
+      }),
+      {
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+  } catch (error) {
+    logger.error('Failed to invalidate Canvas cache entry', error);
+    return new Response(JSON.stringify({ error: 'Failed to invalidate Canvas cache entry' }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });

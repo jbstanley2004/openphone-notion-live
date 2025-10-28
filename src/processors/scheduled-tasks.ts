@@ -6,6 +6,7 @@
 import type { Env } from '../types/env';
 import { Logger } from '../utils/logger';
 import { runComprehensiveBackfill } from './comprehensive-backfill';
+import { replicateCanvasCacheToKV } from './canvas-cache-replicator';
 
 /**
  * Run all scheduled tasks
@@ -18,6 +19,13 @@ import { runComprehensiveBackfill } from './comprehensive-backfill';
  */
 export async function runScheduledTasks(env: Env, logger: Logger): Promise<void> {
   logger.info('Starting scheduled comprehensive backfill');
+
+  try {
+    const replication = await replicateCanvasCacheToKV(env, logger);
+    logger.info('Canvas cache replication run before backfill', replication);
+  } catch (error) {
+    logger.error('Canvas cache replication failed', error);
+  }
 
   try {
     // Run comprehensive backfill with full AI and vectorization

@@ -19,6 +19,13 @@ import { OpenPhoneClient } from '../utils/openphone-client';
 import { NotionClient } from '../utils/notion-client';
 import { R2Client } from '../utils/r2-client';
 import { RateLimiter } from '../utils/rate-limiter';
+import {
+  buildCanvasCacheKey,
+  buildCanvasKVKey,
+  normalizeCanvasLookup,
+  type CanvasLookupType,
+  type CanvasCacheKVValue,
+} from '../utils/canvas-cache';
 
 interface PhoneNumberState {
   phoneNumberId: string;
@@ -53,6 +60,24 @@ export class PhoneNumberSync {
     const stored = await this.ctx.storage.get<PhoneNumberState>('state');
 
     if (stored) {
+      // Normalize existing cache keys to the new format (type:normalizedLookup)
+      const normalizedCache: Record<string, string> = {};
+      for (const [key, value] of Object.entries(stored.canvasCache || {})) {
+        if (!key.includes(':')) {
+          continue;
+        }
+        const [rawType, ...rest] = key.split(':');
+        const type = (rawType as CanvasLookupType) || 'phone';
+        const originalLookup = rest.join(':');
+        const normalizedLookup = normalizeCanvasLookup(type, originalLookup);
+        if (!normalizedLookup) {
+          continue;
+        }
+        const normalizedKey = buildCanvasCacheKey(type, normalizedLookup);
+        normalizedCache[normalizedKey] = value;
+      }
+
+      stored.canvasCache = normalizedCache;
       this.state = stored;
       this.logger = this.logger.withContext({ phoneNumberId: this.state.phoneNumberId });
       this.logger.info('Loaded state from durable storage', {
@@ -97,22 +122,70 @@ export class PhoneNumberSync {
   /**
    * Get Canvas ID from cache or fetch
    */
-  private async getCanvasId(lookup: string, type: 'phone' | 'email', notionClient: NotionClient): Promise<string | null> {
+  private async getCanvasId(lookup: string, type: CanvasLookupType, notionClient: NotionClient): Promise<string | null> {
     if (!this.state) return null;
 
-    // Check in-memory cache first
-    const cacheKey = `${type}:${lookup}`;
-    if (this.state.canvasCache[cacheKey]) {
-      this.logger.info('Canvas cache hit', { lookup, type, canvasId: this.state.canvasCache[cacheKey] });
+    const normalizedLookup = normalizeCanvasLookup(type, lookup);
+    if (!normalizedLookup) {
+      this.logger.warn('Skipping Canvas lookup - normalized lookup empty', { lookup, type });
+      return null;
+    }
 
-      // Update D1 cache stats (async, don't wait)
-      this.ctx.waitUntil(this.updateCanvasCacheHit(lookup, type));
+    const cacheKey = buildCanvasCacheKey(type, normalizedLookup);
+    const kvKey = buildCanvasKVKey(type, normalizedLookup);
+
+    // Check KV cache first (shared across workers)
+    try {
+      const kvValue = await this.env.CACHE.get(kvKey);
+      if (kvValue) {
+        const parsed = JSON.parse(kvValue) as CanvasCacheKVValue;
+        if (parsed?.canvasId) {
+          this.logger.info('Canvas cache hit (KV)', {
+            lookup: normalizedLookup,
+            type,
+            canvasId: parsed.canvasId,
+            version: parsed.version,
+          });
+
+          this.state.canvasCache[cacheKey] = parsed.canvasId;
+          await this.saveState();
+
+          this.ctx.waitUntil(
+            this.logCanvasCache(normalizedLookup, type, parsed.canvasId, {
+              source: 'kv',
+            })
+          );
+
+          return parsed.canvasId;
+        }
+      }
+    } catch (error) {
+      this.logger.error('Failed to read Canvas cache from KV', {
+        error: String(error),
+        lookup: normalizedLookup,
+        type,
+      });
+    }
+
+    // Check in-memory DO state cache
+    if (this.state.canvasCache[cacheKey]) {
+      this.logger.info('Canvas cache hit (DO state)', {
+        lookup: normalizedLookup,
+        type,
+        canvasId: this.state.canvasCache[cacheKey],
+      });
+
+      this.ctx.waitUntil(
+        this.logCanvasCache(normalizedLookup, type, this.state.canvasCache[cacheKey], {
+          source: 'do_state',
+        })
+      );
 
       return this.state.canvasCache[cacheKey];
     }
 
     // Cache miss - query Notion
-    this.logger.info('Canvas cache miss, querying Notion', { lookup, type });
+    this.logger.info('Canvas cache miss, querying Notion', { lookup: normalizedLookup, type });
     const startTime = Date.now();
 
     let canvasId: string | null = null;
@@ -125,12 +198,16 @@ export class PhoneNumberSync {
     const duration = Date.now() - startTime;
 
     if (canvasId) {
-      // Cache the result
+      // Cache the result in DO state
       this.state.canvasCache[cacheKey] = canvasId;
       await this.saveState();
 
       // Log to D1 (async)
-      this.ctx.waitUntil(this.logCanvasCache(lookup, type, canvasId));
+      this.ctx.waitUntil(
+        this.logCanvasCache(normalizedLookup, type, canvasId, {
+          source: 'notion',
+        })
+      );
     }
 
     // Log performance metric
@@ -357,25 +434,101 @@ export class PhoneNumberSync {
     await this.logToD1('sync_history', data);
   }
 
-  private async logCanvasCache(lookup: string, type: string, canvasId: string): Promise<void> {
+  private async logCanvasCache(
+    normalizedLookup: string,
+    type: CanvasLookupType,
+    canvasId: string,
+    metadata: { source: string; canvasName?: string } = { source: 'notion' }
+  ): Promise<void> {
     const now = Date.now();
-    await this.logToD1('canvas_cache', {
-      lookup_key: lookup,
-      lookup_type: type,
-      canvas_id: canvasId,
-      cached_at: now,
-      hit_count: 1,
-      last_used_at: now,
-    });
-  }
 
-  private async updateCanvasCacheHit(lookup: string, type: string): Promise<void> {
     try {
-      await this.env.DB.prepare(
-        `UPDATE canvas_cache SET hit_count = hit_count + 1, last_used_at = ? WHERE lookup_key = ?`
-      ).bind(Date.now(), lookup).run();
+      const existing = await this.env.DB.prepare(
+        `SELECT canvas_id, version, hit_count, kv_version, kv_written_at, kv_ttl, kv_expires_at
+           FROM canvas_cache
+          WHERE lookup_key = ?`
+      ).bind(normalizedLookup).first<{
+        canvas_id: string;
+        version: number | null;
+        hit_count: number | null;
+        kv_version: number | null;
+        kv_written_at: number | null;
+        kv_ttl: number | null;
+        kv_expires_at: number | null;
+      }>();
+
+      if (existing) {
+        const currentVersion = existing.version ?? 1;
+        const version = existing.canvas_id === canvasId ? currentVersion : currentVersion + 1;
+        const hitCount = (existing.hit_count ?? 0) + 1;
+
+        await this.env.DB.prepare(
+          `UPDATE canvas_cache
+              SET lookup_type = ?,
+                  canvas_id = ?,
+                  canvas_name = ?,
+                  cached_at = ?,
+                  hit_count = ?,
+                  last_used_at = ?,
+                  source = ?,
+                  version = ?,
+                  last_verified_at = ?,
+                  invalidated_at = NULL
+            WHERE lookup_key = ?`
+        )
+          .bind(
+            type,
+            canvasId,
+            metadata.canvasName ?? null,
+            now,
+            hitCount,
+            now,
+            metadata.source,
+            version,
+            now,
+            normalizedLookup
+          )
+          .run();
+      } else {
+        await this.env.DB.prepare(
+          `INSERT INTO canvas_cache (
+              lookup_key,
+              lookup_type,
+              canvas_id,
+              canvas_name,
+              cached_at,
+              hit_count,
+              last_used_at,
+              source,
+              version,
+              last_verified_at,
+              kv_version,
+              kv_written_at,
+              kv_ttl,
+              kv_expires_at,
+              invalidated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL)`
+        )
+          .bind(
+            normalizedLookup,
+            type,
+            canvasId,
+            metadata.canvasName ?? null,
+            now,
+            1,
+            now,
+            metadata.source,
+            1,
+            now
+          )
+          .run();
+      }
     } catch (error) {
-      this.logger.error('Failed to update canvas cache hit', { error: String(error) });
+      this.logger.error('Failed to log canvas cache event', {
+        error: String(error),
+        lookup: normalizedLookup,
+        type,
+      });
     }
   }
 
