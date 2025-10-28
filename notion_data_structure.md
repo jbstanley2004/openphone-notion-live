@@ -1,7 +1,7 @@
 # Notion
 
 ```markdown
-# Project Instructions: Data Architecture & Workflows for Notion
+# Data Architecture & Workflows for Notion
 
 ## Overview
 
