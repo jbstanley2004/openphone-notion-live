@@ -824,7 +824,13 @@ export class NotionClient {
       result.canvas.sampleRecords = canvasRecords.results.map((page: any) => {
         const props = page.properties;
         const title = Object.values(props).find((p: any) => p.type === 'title');
-        const titleText = title && 'title' in title ? title.title.map((t: any) => t.plain_text).join('') : '';
+        const titleSegments =
+          title && typeof title === 'object' && title !== null && 'title' in (title as any)
+            ? (title as any).title
+            : [];
+        const titleText = Array.isArray(titleSegments)
+          ? titleSegments.map((t: any) => t.plain_text).join('')
+          : '';
 
         let phoneValue = null;
         let phoneType = null;

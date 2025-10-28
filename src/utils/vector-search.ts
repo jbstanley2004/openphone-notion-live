@@ -15,16 +15,28 @@ import type { Env } from '../types/env';
 import type { Call, Message } from '../types/openphone';
 import type { Logger } from './logger';
 
+export interface VectorMetadata {
+  phoneNumber?: string;
+  timestamp: string;
+  notionPageId?: string;
+  type: 'call' | 'message';
+  direction?: string;
+  canvasId?: string;
+  merchantUuid?: string;
+  merchantName?: string;
+  interactionType?: 'call' | 'message';
+}
+
 export interface VectorSearchResult {
   id: string;
   score: number;
-  metadata: {
-    phoneNumber?: string;
-    timestamp: string;
-    notionPageId?: string;
-    type: 'call' | 'message';
-    direction?: string;
-  };
+  metadata: VectorMetadata;
+}
+
+interface VectorMetadataContext {
+  canvasId?: string | null;
+  merchantUuid?: string | null;
+  merchantName?: string | null;
 }
 
 export interface RAGSearchResult {
@@ -44,7 +56,8 @@ export async function indexCall(
   summary: string | undefined,
   notionPageId: string,
   env: Env,
-  logger: Logger
+  logger: Logger,
+  context: VectorMetadataContext = {}
 ): Promise<void> {
   try {
     // Build searchable text from call data
@@ -61,17 +74,31 @@ export async function indexCall(
     }
 
     // Store in Vectorize
+    const metadata: Record<string, any> = {
+      phoneNumber: call.participants[0] || '',
+      timestamp: call.createdAt,
+      notionPageId,
+      type: 'call',
+      direction: call.direction,
+      interactionType: 'call',
+    };
+
+    if (context.canvasId) {
+      metadata.canvasId = context.canvasId;
+    }
+    const merchantUuid = context.merchantUuid ?? context.canvasId;
+    if (merchantUuid) {
+      metadata.merchantUuid = merchantUuid;
+    }
+    if (context.merchantName) {
+      metadata.merchantName = context.merchantName;
+    }
+
     await env.CALL_VECTORS.upsert([
       {
         id: `call:${call.id}`,
         values: embeddings.data[0],
-        metadata: {
-          phoneNumber: call.participants[0] || '',
-          timestamp: call.createdAt,
-          notionPageId,
-          type: 'call',
-          direction: call.direction,
-        },
+        metadata,
       },
     ]);
 
@@ -92,7 +119,8 @@ export async function indexMessage(
   summary: string | undefined,
   notionPageId: string,
   env: Env,
-  logger: Logger
+  logger: Logger,
+  context: VectorMetadataContext = {}
 ): Promise<void> {
   try {
     const searchableText = buildMessageSearchText(message, summary);
@@ -106,17 +134,31 @@ export async function indexMessage(
       return;
     }
 
+    const metadata: Record<string, any> = {
+      phoneNumber: message.from,
+      timestamp: message.createdAt,
+      notionPageId,
+      type: 'message',
+      direction: message.direction,
+      interactionType: 'message',
+    };
+
+    if (context.canvasId) {
+      metadata.canvasId = context.canvasId;
+    }
+    const merchantUuid = context.merchantUuid ?? context.canvasId;
+    if (merchantUuid) {
+      metadata.merchantUuid = merchantUuid;
+    }
+    if (context.merchantName) {
+      metadata.merchantName = context.merchantName;
+    }
+
     await env.CALL_VECTORS.upsert([
       {
         id: `message:${message.id}`,
         values: embeddings.data[0],
-        metadata: {
-          phoneNumber: message.from,
-          timestamp: message.createdAt,
-          notionPageId,
-          type: 'message',
-          direction: message.direction,
-        },
+        metadata,
       },
     ]);
 
@@ -200,7 +242,7 @@ export async function semanticSearch(
     return filteredResults.map((match) => ({
       id: match.id,
       score: match.score,
-      metadata: match.metadata as any,
+      metadata: ((match.metadata as unknown) || {}) as VectorMetadata,
     }));
   } catch (error) {
     logger.error('Semantic search failed', { query, error: String(error) });
@@ -247,7 +289,7 @@ export async function findSimilarCalls(
     return similarCalls.map((match) => ({
       id: match.id.replace('call:', ''),
       score: match.score,
-      metadata: match.metadata as any,
+      metadata: ((match.metadata as unknown) || {}) as VectorMetadata,
     }));
   } catch (error) {
     logger.error('Failed to find similar calls', { callId, error: String(error) });

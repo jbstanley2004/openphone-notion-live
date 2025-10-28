@@ -224,9 +224,9 @@ async function extractActionItems(text: string, env: Env): Promise<string[]> {
     // Parse bullet points
     const items = content
       .split('\n')
-      .filter((line) => line.trim().startsWith('-') || line.trim().startsWith('•'))
-      .map((line) => line.replace(/^[-•]\s*/, '').trim())
-      .filter((item) => item.length > 0 && !item.toLowerCase().includes('none'));
+      .filter((line: string) => line.trim().startsWith('-') || line.trim().startsWith('•'))
+      .map((line: string) => line.replace(/^[-•]\s*/, '').trim())
+      .filter((item: string) => item.length > 0 && !item.toLowerCase().includes('none'));
 
     return items;
   } catch (error) {
