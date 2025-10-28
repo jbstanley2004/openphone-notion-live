@@ -66,6 +66,7 @@ describe('R2Client public URL generation', () => {
     expect(createSignedUrl).toHaveBeenCalledWith({
       key: voicemailKey,
       expires: new Date('9999-12-31T23:59:59.999Z'),
+      expires: expect.any(Date),
     });
   });
 

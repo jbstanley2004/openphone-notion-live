@@ -206,6 +206,8 @@ export class R2Client {
         key,
         expires: new Date(PERMANENT_SIGNED_URL_EXPIRY),
       });
+      const expires = new Date(Date.now() + 15 * 60 * 1000);
+      const result = await maybeCreateSignedUrl.call(this.bucket, { key, expires });
 
       if (typeof result === 'string') {
         return result;
