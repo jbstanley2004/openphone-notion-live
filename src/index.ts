@@ -75,6 +75,36 @@ export default {
         });
       }
 
+      // Merchant Retrieval API - Get all data for a merchant by Canvas ID
+      if (url.pathname === '/api/merchant/canvas' && request.method === 'POST') {
+        return await handleMerchantByCanvasAPI(request, env, logger);
+      }
+
+      // Merchant Retrieval API - Get all data for a merchant by phone number
+      if (url.pathname === '/api/merchant/phone' && request.method === 'POST') {
+        return await handleMerchantByPhoneAPI(request, env, logger);
+      }
+
+      // Merchant Retrieval API - Get all data for a merchant by email
+      if (url.pathname === '/api/merchant/email' && request.method === 'POST') {
+        return await handleMerchantByEmailAPI(request, env, logger);
+      }
+
+      // Merchant Retrieval API - Search merchants
+      if (url.pathname === '/api/merchant/search' && request.method === 'POST') {
+        return await handleMerchantSearchAPI(request, env, logger);
+      }
+
+      // Merchant Retrieval API - Get merchant summary
+      if (url.pathname === '/api/merchant/summary' && request.method === 'POST') {
+        return await handleMerchantSummaryAPI(request, env, logger);
+      }
+
+      // Backfill API - Trigger comprehensive backfill
+      if (url.pathname === '/api/backfill/comprehensive' && request.method === 'POST') {
+        return await handleComprehensiveBackfillAPI(request, env, logger, ctx);
+      }
+
       // Dashboard API - Stats endpoint
       if (url.pathname === '/api/stats' && request.method === 'GET') {
         return await handleStatsAPI(env, logger);
@@ -353,6 +383,222 @@ async function handleCacheAPI(
   } catch (error) {
     logger.error('Failed to fetch cache stats', error);
     return new Response(JSON.stringify({ error: 'Failed to fetch cache stats' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle merchant by Canvas ID API request
+ */
+async function handleMerchantByCanvasAPI(
+  request: Request,
+  env: Env,
+  logger: typeof createLogger extends (...args: any[]) => infer R ? R : never
+): Promise<Response> {
+  try {
+    const body = await request.json() as { canvasId: string };
+    if (!body.canvasId) {
+      return new Response(JSON.stringify({ error: 'canvasId required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const { getMerchantDataByCanvas } = await import('./api/merchant-retrieval');
+    const data = await getMerchantDataByCanvas(body.canvasId, env, logger);
+
+    return new Response(JSON.stringify(data), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    logger.error('Merchant by Canvas API failed', error);
+    return new Response(JSON.stringify({ error: 'Failed to retrieve merchant data' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle merchant by phone API request
+ */
+async function handleMerchantByPhoneAPI(
+  request: Request,
+  env: Env,
+  logger: typeof createLogger extends (...args: any[]) => infer R ? R : never
+): Promise<Response> {
+  try {
+    const body = await request.json() as { phoneNumber: string };
+    if (!body.phoneNumber) {
+      return new Response(JSON.stringify({ error: 'phoneNumber required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const { getMerchantDataByPhone } = await import('./api/merchant-retrieval');
+    const data = await getMerchantDataByPhone(body.phoneNumber, env, logger);
+
+    if (!data) {
+      return new Response(JSON.stringify({ error: 'No merchant found for phone number' }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    return new Response(JSON.stringify(data), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    logger.error('Merchant by phone API failed', error);
+    return new Response(JSON.stringify({ error: 'Failed to retrieve merchant data' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle merchant by email API request
+ */
+async function handleMerchantByEmailAPI(
+  request: Request,
+  env: Env,
+  logger: typeof createLogger extends (...args: any[]) => infer R ? R : never
+): Promise<Response> {
+  try {
+    const body = await request.json() as { email: string };
+    if (!body.email) {
+      return new Response(JSON.stringify({ error: 'email required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const { getMerchantDataByEmail } = await import('./api/merchant-retrieval');
+    const data = await getMerchantDataByEmail(body.email, env, logger);
+
+    if (!data) {
+      return new Response(JSON.stringify({ error: 'No merchant found for email' }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    return new Response(JSON.stringify(data), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    logger.error('Merchant by email API failed', error);
+    return new Response(JSON.stringify({ error: 'Failed to retrieve merchant data' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle merchant search API request
+ */
+async function handleMerchantSearchAPI(
+  request: Request,
+  env: Env,
+  logger: typeof createLogger extends (...args: any[]) => infer R ? R : never
+): Promise<Response> {
+  try {
+    const body = await request.json() as { query: string; topK?: number; dateFrom?: string; dateTo?: string };
+    if (!body.query) {
+      return new Response(JSON.stringify({ error: 'query required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const { searchMerchants } = await import('./api/merchant-retrieval');
+    const results = await searchMerchants(body.query, {
+      topK: body.topK || 10,
+      dateFrom: body.dateFrom,
+      dateTo: body.dateTo,
+    }, env, logger);
+
+    return new Response(JSON.stringify({ results }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    logger.error('Merchant search API failed', error);
+    return new Response(JSON.stringify({ error: 'Failed to search merchants' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle merchant summary API request
+ */
+async function handleMerchantSummaryAPI(
+  request: Request,
+  env: Env,
+  logger: typeof createLogger extends (...args: any[]) => infer R ? R : never
+): Promise<Response> {
+  try {
+    const body = await request.json() as { canvasId: string };
+    if (!body.canvasId) {
+      return new Response(JSON.stringify({ error: 'canvasId required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const { getMerchantSummary } = await import('./api/merchant-retrieval');
+    const summary = await getMerchantSummary(body.canvasId, env, logger);
+
+    return new Response(JSON.stringify(summary), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    logger.error('Merchant summary API failed', error);
+    return new Response(JSON.stringify({ error: 'Failed to get merchant summary' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle comprehensive backfill API request
+ */
+async function handleComprehensiveBackfillAPI(
+  request: Request,
+  env: Env,
+  logger: typeof createLogger extends (...args: any[]) => infer R ? R : never,
+  ctx: ExecutionContext
+): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      daysBack?: number;
+      includeAI?: boolean;
+      includeVectorize?: boolean;
+      reconcileCanvas?: boolean;
+    };
+
+    // Run backfill in background
+    const { runComprehensiveBackfill } = await import('./processors/comprehensive-backfill');
+
+    ctx.waitUntil(runComprehensiveBackfill(env, logger, body));
+
+    return new Response(JSON.stringify({
+      status: 'started',
+      message: 'Comprehensive backfill started in background',
+      options: body,
+    }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    logger.error('Comprehensive backfill API failed', error);
+    return new Response(JSON.stringify({ error: 'Failed to start backfill' }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });
