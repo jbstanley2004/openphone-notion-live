@@ -27,6 +27,7 @@ import {
   retry,
   isRetryableError,
 } from '../utils/helpers';
+import { syncCallToD1, syncMessageToD1 } from '../utils/d1-ingestion';
 
 /**
  * Process a webhook event
@@ -168,6 +169,7 @@ async function handleCallCompleted(
 
     // Sync to Notion
     const existingPageId = await notionClient.callPageExists(call.id);
+    let notionPageId: string;
     if (existingPageId) {
       await notionClient.updateCallPage(existingPageId, {
         ...completeData,
@@ -175,19 +177,30 @@ async function handleCallCompleted(
         voicemailUrl,
       });
       logger.info('Call page updated in Notion', { callId: call.id, pageId: existingPageId });
+      notionPageId = existingPageId;
     } else {
-      const pageId = await notionClient.createCallPage({
+      notionPageId = await notionClient.createCallPage({
         ...completeData,
         recordingUrl,
         voicemailUrl,
       });
-      logger.info('Call page created in Notion', { callId: call.id, pageId });
+      logger.info('Call page created in Notion', { callId: call.id, pageId: notionPageId });
 
       // Mark as synced
-      await markAsSynced(env.SYNC_STATE, call.id, 'call', pageId);
+      await markAsSynced(env.SYNC_STATE, call.id, 'call', notionPageId);
+    }
+
+    try {
+      await syncCallToD1(completeData, env, notionClient, logger, {
+        notionPageId,
+        recordingUrl,
+        voicemailUrl,
+      });
+    } catch (error) {
+      logger.error('Failed to sync call to D1', error);
     }
   } catch (error) {
-    await markAsFailed(env.SYNC_STATE, call.id, 'call', String(error), existingSync?.attempts || 0 + 1);
+    await markAsFailed(env.SYNC_STATE, call.id, 'call', String(error), (existingSync?.attempts || 0) + 1);
     throw error;
   }
 }
@@ -227,17 +240,28 @@ async function handleCallRecordingCompleted(
 
     // Update or create Notion page
     const existingPageId = await notionClient.callPageExists(call.id);
+    let notionPageId: string;
     if (existingPageId) {
       await notionClient.updateCallPage(existingPageId, {
         ...completeData,
         recordingUrl,
       });
+      notionPageId = existingPageId;
     } else {
-      const pageId = await notionClient.createCallPage({
+      notionPageId = await notionClient.createCallPage({
         ...completeData,
         recordingUrl,
       });
-      await markAsSynced(env.SYNC_STATE, call.id, 'call', pageId);
+      await markAsSynced(env.SYNC_STATE, call.id, 'call', notionPageId);
+    }
+
+    try {
+      await syncCallToD1(completeData, env, notionClient, logger, {
+        notionPageId,
+        recordingUrl,
+      });
+    } catch (error) {
+      logger.error('Failed to sync call recording to D1', error);
     }
   } catch (error) {
     logger.error('Failed to handle recording.completed', error);
@@ -262,11 +286,21 @@ async function handleCallTranscriptCompleted(
     const completeData = await openPhoneClient.getCompleteCall(transcript.callId);
 
     const existingPageId = await notionClient.callPageExists(transcript.callId);
+    let notionPageId: string;
     if (existingPageId) {
       await notionClient.updateCallPage(existingPageId, completeData);
+      notionPageId = existingPageId;
     } else {
-      const pageId = await notionClient.createCallPage(completeData);
-      await markAsSynced(env.SYNC_STATE, transcript.callId, 'call', pageId);
+      notionPageId = await notionClient.createCallPage(completeData);
+      await markAsSynced(env.SYNC_STATE, transcript.callId, 'call', notionPageId);
+    }
+
+    try {
+      await syncCallToD1(completeData, env, notionClient, logger, {
+        notionPageId,
+      });
+    } catch (error) {
+      logger.error('Failed to sync call transcript to D1', error);
     }
   } catch (error) {
     logger.error('Failed to handle transcript.completed', error);
@@ -291,11 +325,21 @@ async function handleCallSummaryCompleted(
     const completeData = await openPhoneClient.getCompleteCall(summary.callId);
 
     const existingPageId = await notionClient.callPageExists(summary.callId);
+    let notionPageId: string;
     if (existingPageId) {
       await notionClient.updateCallPage(existingPageId, completeData);
+      notionPageId = existingPageId;
     } else {
-      const pageId = await notionClient.createCallPage(completeData);
-      await markAsSynced(env.SYNC_STATE, summary.callId, 'call', pageId);
+      notionPageId = await notionClient.createCallPage(completeData);
+      await markAsSynced(env.SYNC_STATE, summary.callId, 'call', notionPageId);
+    }
+
+    try {
+      await syncCallToD1(completeData, env, notionClient, logger, {
+        notionPageId,
+      });
+    } catch (error) {
+      logger.error('Failed to sync call summary to D1', error);
     }
   } catch (error) {
     logger.error('Failed to handle summary.completed', error);
@@ -331,18 +375,28 @@ async function handleMessage(
 
     // Sync to Notion
     const existingPageId = await notionClient.messagePageExists(message.id);
+    let notionPageId: string;
     if (existingPageId) {
       await notionClient.updateMessagePage(existingPageId, latestMessage);
       logger.info('Message page updated in Notion', { messageId: message.id, pageId: existingPageId });
+      notionPageId = existingPageId;
     } else {
-      const pageId = await notionClient.createMessagePage(latestMessage);
-      logger.info('Message page created in Notion', { messageId: message.id, pageId });
+      notionPageId = await notionClient.createMessagePage(latestMessage);
+      logger.info('Message page created in Notion', { messageId: message.id, pageId: notionPageId });
 
       // Mark as synced
-      await markAsSynced(env.SYNC_STATE, message.id, 'message', pageId);
+      await markAsSynced(env.SYNC_STATE, message.id, 'message', notionPageId);
+    }
+
+    try {
+      await syncMessageToD1(latestMessage, env, notionClient, logger, {
+        notionPageId,
+      });
+    } catch (error) {
+      logger.error('Failed to sync message to D1', error);
     }
   } catch (error) {
-    await markAsFailed(env.SYNC_STATE, message.id, 'message', String(error), existingSync?.attempts || 0 + 1);
+    await markAsFailed(env.SYNC_STATE, message.id, 'message', String(error), (existingSync?.attempts || 0) + 1);
     throw error;
   }
 }
