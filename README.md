@@ -105,6 +105,67 @@ wrangler r2 bucket create openphone-recordings-dev
 # Or create manually:
 wrangler queues create openphone-webhook-events
 wrangler queues create openphone-webhook-events-dlq
+
+# Create preview queues for local development/testing
+wrangler queues create openphone-webhook-events-dev
+wrangler queues create openphone-webhook-events-dev-dlq
+```
+
+Update `wrangler.jsonc` so the preview bindings point at the `-dev` queues:
+
+```jsonc
+"queues": {
+  "producers": [
+    {
+      "binding": "WEBHOOK_EVENTS",
+      "queue": "openphone-webhook-events",
+      "preview_queue": "openphone-webhook-events-dev"
+    }
+  ],
+  "consumers": [
+    {
+      "queue": "openphone-webhook-events",
+      "preview_queue": "openphone-webhook-events-dev",
+      "dead_letter_queue": "openphone-webhook-events-dlq",
+      "preview_dead_letter_queue": "openphone-webhook-events-dev-dlq"
+    }
+  ]
+}
+```
+
+#### Configure D1 Database
+
+```bash
+wrangler d1 create openphone-sync-db
+wrangler d1 create openphone-sync-db-dev
+```
+
+Copy the production and preview `database_id` values into `wrangler.jsonc`:
+
+```jsonc
+"d1_databases": [
+  {
+    "binding": "DB",
+    "database_name": "openphone-sync-db",
+    "database_id": "<prod-id>",
+    "preview_database_id": "<dev-id>"
+  }
+]
+```
+
+#### Durable Object Namespace
+
+Deploying the Worker registers the `PhoneNumberSync` Durable Object. No manual setup is required, but confirm the `wrangler.jsonc` binding matches the exported class name:
+
+```jsonc
+"durable_objects": {
+  "bindings": [
+    {
+      "name": "PHONE_SYNC",
+      "class_name": "PhoneNumberSync"
+    }
+  ]
+}
 ```
 
 ### 3. Set Up Notion Databases
