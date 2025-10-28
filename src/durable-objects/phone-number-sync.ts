@@ -13,7 +13,6 @@
 
 import type { DurableObjectState } from '@cloudflare/workers-types';
 import type { Env } from '../types/env';
-import type { Call, Message } from '../types/openphone';
 import { Logger, createLogger } from '../utils/logger';
 import { OpenPhoneClient } from '../utils/openphone-client';
 import { NotionClient } from '../utils/notion-client';
@@ -26,6 +25,30 @@ import {
   type CanvasLookupType,
   type CanvasCacheKVValue,
 } from '../utils/canvas-cache';
+import {
+  triggerCallWorkflow,
+  triggerMessageWorkflow,
+  triggerMailWorkflow,
+} from '../workflows/trigger';
+import type { WebhookEvent, Call, CallSummary, CallTranscript, Message, Mail } from '../types/openphone';
+
+const DO_CALL_EVENTS = new Set<WebhookEvent['type']>([
+  'call.completed',
+  'call.recording.completed',
+  'call.transcript.completed',
+  'call.summary.completed',
+]);
+
+const DO_MESSAGE_EVENTS = new Set<WebhookEvent['type']>([
+  'message.received',
+  'message.delivered',
+]);
+
+const DO_MAIL_EVENTS = new Set<WebhookEvent['type']>([
+  'mail.received',
+  'mail.delivered',
+  'mail.sent',
+]);
 
 interface PhoneNumberState {
   phoneNumberId: string;
@@ -35,6 +58,20 @@ interface PhoneNumberState {
   canvasCache: Record<string, string>; // phone/email -> canvas ID
   totalCallsSynced: number;
   totalMessagesSynced: number;
+}
+
+function extractDoCallId(event: WebhookEvent): string | null {
+  const object = event.data.object as Call | CallSummary | CallTranscript | { callId?: string };
+
+  if ('id' in object && typeof object.id === 'string' && event.type !== 'call.summary.completed') {
+    return object.id;
+  }
+
+  if ('callId' in object && typeof object.callId === 'string') {
+    return object.callId;
+  }
+
+  return null;
 }
 
 export class PhoneNumberSync {
@@ -406,10 +443,55 @@ export class PhoneNumberSync {
   /**
    * Handle webhook event for this phone number
    */
-  async handleWebhook(event: any, env: Env): Promise<void> {
-    // Process webhook in real-time
-    // Use cached Canvas lookups
-    // TODO: Implement webhook handling
+  async handleWebhook(rawEvent: any, env: Env): Promise<void> {
+    const event = rawEvent as WebhookEvent;
+    const logger = this.logger.withContext({ eventId: event.id, eventType: event.type });
+
+    logger.info('Durable object handling webhook', { eventType: event.type });
+
+    try {
+      if (DO_CALL_EVENTS.has(event.type)) {
+        const callId = extractDoCallId(event);
+        if (!callId) {
+          logger.warn('Unable to resolve call ID for DO webhook', { eventType: event.type });
+          return;
+        }
+
+        await triggerCallWorkflow(env, logger, {
+          callId,
+          phoneNumberId: this.state?.phoneNumberId ?? null,
+        });
+        return;
+      }
+
+      if (DO_MESSAGE_EVENTS.has(event.type)) {
+        const message = event.data.object as Message;
+        if (!message || message.phoneNumberId !== this.state?.phoneNumberId) {
+          logger.debug('Skipping message event for different phone number', {
+            phoneNumberId: this.state?.phoneNumberId,
+            eventPhoneNumberId: message?.phoneNumberId ?? null,
+          });
+          return;
+        }
+
+        await triggerMessageWorkflow(env, logger, {
+          messageId: message.id,
+          phoneNumberId: message.phoneNumberId ?? null,
+        });
+        return;
+      }
+
+      if (DO_MAIL_EVENTS.has(event.type)) {
+        const mail = event.data.object as Mail;
+        await triggerMailWorkflow(env, logger, { mail });
+        return;
+      }
+
+      logger.warn('Durable object received unhandled webhook type', { eventType: event.type });
+    } catch (error) {
+      logger.error('Durable object workflow trigger failed', error);
+      throw error;
+    }
   }
 
   // ========================================================================

@@ -65,7 +65,9 @@ export interface Env {
   CALL_VECTORS: Vectorize;
 
   // Workflows for complex multi-step processing
-  CALL_PROCESSING_WORKFLOW: Fetcher;
+  CALL_PROCESSING_WORKFLOW?: Fetcher;
+  MESSAGE_PROCESSING_WORKFLOW?: Fetcher;
+  MAIL_PROCESSING_WORKFLOW?: Fetcher;
 
   // Static Assets for dashboard
   ASSETS: Fetcher;

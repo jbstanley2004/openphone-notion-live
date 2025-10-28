@@ -19,8 +19,10 @@ import { invalidateCanvasMapping, normalizeCanvasLookup, type CanvasLookupType }
 // Export Durable Object
 export { PhoneNumberSync } from './durable-objects/phone-number-sync';
 
-// Export Workflow
+// Export Workflows
 export { CallProcessingWorkflow } from './workflows/call-processing';
+export { MessageProcessingWorkflow } from './workflows/message-processing';
+export { MailProcessingWorkflow } from './workflows/mail-processing';
 
 export default {
   /**

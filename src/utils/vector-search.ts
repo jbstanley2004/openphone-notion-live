@@ -12,19 +12,19 @@
  */
 
 import type { Env } from '../types/env';
-import type { Call, Message } from '../types/openphone';
+import type { Call, Message, Mail } from '../types/openphone';
 import type { Logger } from './logger';
 
 export interface VectorMetadata {
   phoneNumber?: string;
   timestamp: string;
   notionPageId?: string;
-  type: 'call' | 'message';
+  type: 'call' | 'message' | 'mail';
   direction?: string;
   canvasId?: string;
   merchantUuid?: string;
   merchantName?: string;
-  interactionType?: 'call' | 'message';
+  interactionType?: 'call' | 'message' | 'mail';
 }
 
 export interface VectorSearchResult {
@@ -166,6 +166,66 @@ export async function indexMessage(
   } catch (error) {
     logger.error('Failed to index message in Vectorize', {
       messageId: message.id,
+      error: String(error),
+    });
+  }
+}
+
+/**
+ * Index a mail item in Vectorize for semantic search
+ */
+export async function indexMail(
+  mail: Mail,
+  summary: string | undefined,
+  notionPageId: string,
+  env: Env,
+  logger: Logger,
+  context: VectorMetadataContext = {}
+): Promise<void> {
+  try {
+    const searchableText = buildMailSearchText(mail, summary);
+
+    const embeddings = await env.AI.run('@cf/baai/bge-base-en-v1.5', {
+      text: [searchableText],
+    }) as { data: number[][] };
+
+    if (!embeddings?.data?.[0]) {
+      logger.warn('No embeddings generated for mail', { mailId: mail.id });
+      return;
+    }
+
+    const metadata: Record<string, any> = {
+      phoneNumber: mail.from,
+      timestamp: mail.createdAt,
+      notionPageId,
+      type: 'mail',
+      direction: mail.direction,
+      interactionType: 'mail',
+    };
+
+    if (context.canvasId) {
+      metadata.canvasId = context.canvasId;
+    }
+    const merchantUuid = context.merchantUuid ?? context.canvasId;
+    if (merchantUuid) {
+      metadata.merchantUuid = merchantUuid;
+    }
+    if (context.merchantName) {
+      metadata.merchantName = context.merchantName;
+    }
+
+    await env.CALL_VECTORS.upsert([
+      {
+        id: `mail:${mail.id}`,
+        values: embeddings.data[0],
+        metadata,
+      },
+    ]);
+
+    logger.info('Mail indexed in Vectorize', { mailId: mail.id });
+  } catch (error) {
+    logger.error('Failed to index mail in Vectorize', {
+      mailId: mail.id,
       error: String(error),
     });
   }
@@ -731,6 +791,25 @@ function buildMessageSearchText(message: Message, summary: string | undefined): 
 
   if (message.text) {
     parts.push(message.text);
+  }
+
+  return parts.join('\n').slice(0, 8000);
+}
+
+function buildMailSearchText(mail: Mail, summary: string | undefined): string {
+  const parts = [
+    `Mail ${mail.direction ?? 'unknown'}`,
+    `From: ${mail.from}`,
+    `To: ${(mail.to ?? []).join(', ')}`,
+    `Subject: ${mail.subject}`,
+  ];
+
+  if (summary) {
+    parts.push(summary);
+  }
+
+  if (mail.body) {
+    parts.push(mail.body);
   }
 
   return parts.join('\n').slice(0, 8000);
