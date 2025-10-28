@@ -5,10 +5,12 @@ OPENPHONE_API_KEY=your_openphone_api_key_here
 NOTION_API_KEY=your_notion_integration_token_here
 
 # Notion Database IDs
-# To get database IDs: Open the database in Notion, copy the URL
-# Format: https://notion.so/{database_id}?v=...
-NOTION_CALLS_DATABASE_ID=your_calls_database_id_here
-NOTION_MESSAGES_DATABASE_ID=your_messages_database_id_here
+# Schema documented in notion_data_structure.md
+# Calls: https://www.notion.so/...db=40e7c6356ce046a186cf095801399fc8
+# Messages: https://www.notion.so/...db=fd2b189cdfc44f46813d4035960e7e15
+# Canvas + Mail IDs are canonical for this workspace
+NOTION_CALLS_DATABASE_ID=40e7c6356ce046a186cf095801399fc8
+NOTION_MESSAGES_DATABASE_ID=fd2b189cdfc44f46813d4035960e7e15
 NOTION_CANVAS_DATABASE_ID=fc0e485b6570460e995b94431b08f0a7
 NOTION_MAIL_DATABASE_ID=20af9371362f8031b737fda7c8c9797d
 
