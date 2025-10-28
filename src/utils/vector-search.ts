@@ -6,6 +6,9 @@
  * - Similar call detection (duplicate leads)
  * - Content-based Canvas matching
  * - Trend analysis across conversations
+ * - Query rewriting for better retrieval
+ * - RAG-based response generation
+ * - Similarity caching for performance
  */
 
 import type { Env } from '../types/env';
@@ -22,6 +25,14 @@ export interface VectorSearchResult {
     type: 'call' | 'message';
     direction?: string;
   };
+}
+
+export interface RAGSearchResult {
+  answer: string;
+  sources: VectorSearchResult[];
+  originalQuery: string;
+  rewrittenQuery?: string;
+  cached: boolean;
 }
 
 /**
@@ -315,6 +326,327 @@ export async function findCanvasBySemantic(
   } catch (error) {
     logger.error('Semantic Canvas matching failed', { error: String(error) });
     return null;
+  }
+}
+
+// ========================================================================
+// AI Search Enhancements
+// ========================================================================
+
+/**
+ * Rewrite a user query to optimize it for better retrieval
+ * Uses LLM to expand, clarify, and optimize the search query
+ */
+export async function rewriteQuery(
+  query: string,
+  env: Env,
+  logger: Logger
+): Promise<string> {
+  try {
+    const response = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
+      messages: [
+        {
+          role: 'system',
+          content: `You are a search query optimizer for a business phone call database. Your task is to rewrite user queries to improve semantic search retrieval.
+
+Rules:
+- Expand abbreviations and acronyms
+- Add relevant synonyms and related terms
+- Clarify ambiguous terms
+- Keep queries concise (max 2-3 sentences)
+- Focus on business communication context
+- Output ONLY the rewritten query, no explanation
+
+Examples:
+Input: "pricing calls"
+Output: "calls discussing pricing, quotes, cost, rates, payment terms, and billing information"
+
+Input: "angry customers"
+Output: "calls with frustrated, upset, dissatisfied customers expressing complaints, issues, or negative feedback"
+
+Input: "follow up needed"
+Output: "calls requiring follow-up action, callbacks, additional information, or unresolved issues needing attention"`
+        },
+        {
+          role: 'user',
+          content: query
+        }
+      ],
+      max_tokens: 150
+    }) as { response: string };
+
+    const rewrittenQuery = response.response.trim();
+
+    logger.info('Query rewritten', {
+      original: query,
+      rewritten: rewrittenQuery
+    });
+
+    return rewrittenQuery;
+  } catch (error) {
+    logger.error('Query rewriting failed, using original', {
+      query,
+      error: String(error)
+    });
+    return query; // Fall back to original query
+  }
+}
+
+/**
+ * Generate a cache key for similarity caching
+ * Uses hash of query for efficient lookup
+ */
+async function generateQueryCacheKey(
+  query: string,
+  options: {
+    topK?: number;
+    type?: string;
+    phoneNumber?: string;
+    dateFrom?: string;
+    dateTo?: string;
+  }
+): Promise<string> {
+  const cacheInput = JSON.stringify({ query, ...options });
+  // Use Web Crypto API (available in Cloudflare Workers)
+  const encoder = new TextEncoder();
+  const data = encoder.encode(cacheInput);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const hash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('').substring(0, 16);
+  return `search:v1:${hash}`;
+}
+
+/**
+ * Enhanced semantic search with similarity caching
+ * Caches results for 1 hour to improve performance for repeated queries
+ */
+export async function semanticSearchWithCache(
+  query: string,
+  options: {
+    topK?: number;
+    type?: 'call' | 'message' | 'all';
+    phoneNumber?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    useCache?: boolean;
+    rewriteQuery?: boolean;
+  },
+  env: Env,
+  logger: Logger
+): Promise<VectorSearchResult[]> {
+  const useCache = options.useCache !== false; // Default to true
+  const cacheKey = await generateQueryCacheKey(query, options);
+
+  // Check cache first
+  if (useCache) {
+    try {
+      const cached = await env.CACHE.get(cacheKey, 'json') as VectorSearchResult[] | null;
+      if (cached) {
+        logger.info('Search results retrieved from cache', {
+          query,
+          resultCount: cached.length,
+          cacheKey
+        });
+        return cached;
+      }
+    } catch (error) {
+      logger.warn('Cache retrieval failed, performing fresh search', {
+        error: String(error)
+      });
+    }
+  }
+
+  // Optionally rewrite query for better retrieval
+  let searchQuery = query;
+  if (options.rewriteQuery) {
+    searchQuery = await rewriteQuery(query, env, logger);
+  }
+
+  // Perform search
+  const results = await semanticSearch(searchQuery, options, env, logger);
+
+  // Cache results for 1 hour
+  if (useCache && results.length > 0) {
+    try {
+      await env.CACHE.put(cacheKey, JSON.stringify(results), {
+        expirationTtl: 3600 // 1 hour
+      });
+      logger.info('Search results cached', {
+        query,
+        resultCount: results.length,
+        cacheKey
+      });
+    } catch (error) {
+      logger.warn('Failed to cache results', {
+        error: String(error)
+      });
+    }
+  }
+
+  return results;
+}
+
+/**
+ * RAG (Retrieval Augmented Generation) search
+ * Performs semantic search and generates an AI answer based on the results
+ */
+export async function searchWithAnswer(
+  query: string,
+  options: {
+    topK?: number;
+    type?: 'call' | 'message' | 'all';
+    phoneNumber?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    useCache?: boolean;
+    rewriteQuery?: boolean;
+    systemPrompt?: string;
+  },
+  env: Env,
+  logger: Logger
+): Promise<RAGSearchResult> {
+  const startTime = Date.now();
+  const useCache = options.useCache !== false;
+  const originalQuery = query;
+
+  // Generate cache key for the entire RAG response
+  const baseCacheKey = await generateQueryCacheKey(query, options);
+  const ragCacheKey = `rag:v1:${baseCacheKey}`;
+
+  // Check if we have a cached RAG response
+  if (useCache) {
+    try {
+      const cached = await env.CACHE.get(ragCacheKey, 'json') as RAGSearchResult | null;
+      if (cached) {
+        logger.info('RAG response retrieved from cache', {
+          query,
+          cacheKey: ragCacheKey,
+          duration: Date.now() - startTime
+        });
+        return { ...cached, cached: true };
+      }
+    } catch (error) {
+      logger.warn('RAG cache retrieval failed', { error: String(error) });
+    }
+  }
+
+  // Perform semantic search with caching
+  const results = await semanticSearchWithCache(
+    query,
+    {
+      ...options,
+      topK: options.topK || 5 // Default to 5 for RAG context
+    },
+    env,
+    logger
+  );
+
+  if (results.length === 0) {
+    const noResultsResponse: RAGSearchResult = {
+      answer: "I couldn't find any relevant calls or messages matching your query. Try rephrasing your search or broadening the criteria.",
+      sources: [],
+      originalQuery,
+      cached: false
+    };
+    return noResultsResponse;
+  }
+
+  // Build context from search results
+  // We need to fetch the actual content from the results
+  const contextParts: string[] = [];
+
+  for (const result of results.slice(0, 5)) { // Limit to top 5 for context
+    const parts: string[] = [
+      `[${result.metadata.type === 'call' ? 'Call' : 'Message'} - Score: ${result.score.toFixed(2)}]`,
+      `Phone: ${result.metadata.phoneNumber || 'Unknown'}`,
+      `Date: ${new Date(result.metadata.timestamp).toLocaleString()}`,
+      `Direction: ${result.metadata.direction || 'Unknown'}`,
+      `ID: ${result.id}`
+    ];
+    contextParts.push(parts.join(' | '));
+  }
+
+  const context = contextParts.join('\n\n');
+
+  // Generate AI response using the context
+  const systemPrompt = options.systemPrompt || `You are an AI assistant helping analyze business phone calls and messages.
+You have access to a database of calls and messages and can provide insights based on the retrieved information.
+
+When answering:
+- Be concise and specific
+- Reference the call/message details when relevant
+- If multiple calls match, summarize the common themes
+- Always base your answer on the provided context
+- If the context doesn't fully answer the question, acknowledge this`;
+
+  try {
+    const response = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
+      messages: [
+        {
+          role: 'system',
+          content: systemPrompt
+        },
+        {
+          role: 'user',
+          content: `Based on the following search results, answer this question: "${query}"
+
+Search Results:
+${context}
+
+Provide a clear, concise answer based on these results.`
+        }
+      ],
+      max_tokens: 500
+    }) as { response: string };
+
+    const answer = response.response.trim();
+    const rewrittenQuery = options.rewriteQuery ? await rewriteQuery(query, env, logger) : undefined;
+
+    const ragResult: RAGSearchResult = {
+      answer,
+      sources: results,
+      originalQuery,
+      rewrittenQuery,
+      cached: false
+    };
+
+    // Cache the RAG response
+    if (useCache) {
+      try {
+        await env.CACHE.put(ragCacheKey, JSON.stringify(ragResult), {
+          expirationTtl: 3600 // 1 hour
+        });
+        logger.info('RAG response cached', {
+          query,
+          cacheKey: ragCacheKey
+        });
+      } catch (error) {
+        logger.warn('Failed to cache RAG response', { error: String(error) });
+      }
+    }
+
+    const duration = Date.now() - startTime;
+    logger.info('RAG search completed', {
+      query,
+      sourceCount: results.length,
+      answerLength: answer.length,
+      durationMs: duration
+    });
+
+    return ragResult;
+  } catch (error) {
+    logger.error('RAG answer generation failed', {
+      query,
+      error: String(error)
+    });
+
+    // Return results without AI-generated answer
+    return {
+      answer: `Found ${results.length} relevant results, but failed to generate an answer. Please review the sources directly.`,
+      sources: results,
+      originalQuery,
+      cached: false
+    };
   }
 }
 
