@@ -9,6 +9,9 @@ import type {
   AnalyticsEngineDataset,
   D1Database,
   DurableObjectNamespace,
+  Vectorize,
+  Ai,
+  Fetcher,
 } from '@cloudflare/workers-types';
 
 export interface Env {
@@ -54,6 +57,18 @@ export interface Env {
 
   // Durable Object for per-phone-number sync coordination
   PHONE_SYNC: DurableObjectNamespace;
+
+  // Workers AI for intelligent call analysis
+  AI: Ai;
+
+  // Vectorize for semantic search - auto-creates embeddings in real-time
+  CALL_VECTORS: Vectorize;
+
+  // Workflows for complex multi-step processing
+  CALL_PROCESSING_WORKFLOW: Fetcher;
+
+  // Static Assets for dashboard
+  ASSETS: Fetcher;
 }
 
 // ========================================================================
