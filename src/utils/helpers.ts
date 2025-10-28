@@ -95,15 +95,18 @@ export async function markAsSynced(
   kv: KVNamespace,
   resourceId: string,
   resourceType: 'call' | 'message',
-  notionPageId: string
+  notionPageId: string,
+  merchantUuid?: string | null
 ): Promise<void> {
   const state: SyncState = {
     resourceId,
     resourceType,
     status: 'completed',
     notionPageId,
+    merchantUuid: merchantUuid ?? null,
     attempts: 1,
     lastAttempt: new Date().toISOString(),
+    metadata: merchantUuid ? { merchantUuid } : undefined,
   };
   await setSyncState(kv, state);
 }

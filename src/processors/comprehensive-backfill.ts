@@ -298,12 +298,19 @@ async function backfillCallsDatabase(
 
                 const existingPageId = await notionClient.callPageExists(call.id);
                 let notionPageId: string;
+                let merchantUuid: string | null = null;
+                let canvasIdForLog = canvasId;
 
                 if (existingPageId) {
-                  await notionClient.updateCallPage(existingPageId, pageData);
+                  const result = await notionClient.updateCallPage(existingPageId, pageData);
                   notionPageId = existingPageId;
+                  merchantUuid = result.merchantUuid;
+                  canvasIdForLog = result.canvasId || canvasIdForLog;
                 } else {
-                  notionPageId = await notionClient.createCallPage(pageData);
+                  const result = await notionClient.createCallPage(pageData);
+                  notionPageId = result.pageId;
+                  merchantUuid = result.merchantUuid;
+                  canvasIdForLog = result.canvasId || canvasIdForLog;
                 }
 
                 // Vectorize (if enabled)
@@ -313,17 +320,18 @@ async function backfillCallsDatabase(
                     transcript,
                     aiAnalysis?.summary,
                     notionPageId,
+                    merchantUuid,
                     env,
                     logger
                   );
                   logger.info('Call vectorized', { callId: call.id });
                 }
 
-                await markAsSynced(env.SYNC_STATE, call.id, 'call', notionPageId);
+                await markAsSynced(env.SYNC_STATE, call.id, 'call', notionPageId, merchantUuid);
                 synced++;
                 logger.info('Call backfilled successfully', {
                   callId: call.id,
-                  canvasId,
+                  canvasId: canvasIdForLog,
                   aiEnabled: includeAI,
                   vectorized: includeVectorize,
                 });
@@ -456,12 +464,19 @@ async function backfillMessagesDatabase(
 
                 const existingPageId = await notionClient.messagePageExists(message.id);
                 let notionPageId: string;
+                let merchantUuid: string | null = null;
+                let canvasIdForLog = canvasId;
 
                 if (existingPageId) {
-                  await notionClient.updateMessagePage(existingPageId, pageData);
+                  const result = await notionClient.updateMessagePage(existingPageId, pageData);
                   notionPageId = existingPageId;
+                  merchantUuid = result.merchantUuid;
+                  canvasIdForLog = result.canvasId || canvasIdForLog;
                 } else {
-                  notionPageId = await notionClient.createMessagePage(pageData);
+                  const result = await notionClient.createMessagePage(pageData);
+                  notionPageId = result.pageId;
+                  merchantUuid = result.merchantUuid;
+                  canvasIdForLog = result.canvasId || canvasIdForLog;
                 }
 
                 // Vectorize (if enabled)
@@ -470,13 +485,19 @@ async function backfillMessagesDatabase(
                     message,
                     aiAnalysis?.summary,
                     notionPageId,
+                    merchantUuid,
                     env,
                     logger
                   );
                 }
 
-                await markAsSynced(env.SYNC_STATE, message.id, 'message', notionPageId);
+                await markAsSynced(env.SYNC_STATE, message.id, 'message', notionPageId, merchantUuid);
                 synced++;
+                logger.info('Message backfilled successfully', {
+                  messageId: message.id,
+                  canvasId: canvasIdForLog,
+                  vectorized: includeVectorize,
+                });
               } catch (error) {
                 failed++;
                 logger.error('Failed to backfill message', { messageId: message.id, error });

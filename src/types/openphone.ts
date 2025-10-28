@@ -240,7 +240,8 @@ export type WebhookEventType =
   | 'call.transcript.completed'
   | 'call.summary.completed'
   | 'message.received'
-  | 'message.delivered';
+  | 'message.delivered'
+  | 'maintenance.merchant_uuid_backfill';
 
 export interface WebhookEvent<T = any> {
   id: OpenPhoneID<'EV'>;

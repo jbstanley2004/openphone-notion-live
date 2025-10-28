@@ -43,6 +43,7 @@ This document provides comprehensive guidance for querying, adding, and analyzin
 - **Contact Name** (text) - Primary contact person
 - **Phone** (phone_number) - Contact phone
 - **Email** (email) - Contact email
+- **Merchant UUID** (rich_text, synced) - Deterministic identifier linked across all databases
 - **Status** (status) - Pipeline stages:
     - To-do group: Declined, Not started, No response
     - In-progress group: Steve, Follow Up, Other, Docs Out, Signed
@@ -94,6 +95,7 @@ This document provides comprehensive guidance for querying, adding, and analyzin
 - **Read Status** (checkbox) - Read/unread
 - **Flag** (select) - Needs Response, Follow Up, Awaiting Info, Urgent, Important, Completed, No Action Needed
 - **Categories** (multi-select) - Important, Personal, Work, Finance, Shopping, Travel, Social, Newsletter, Follow-up
+- **Merchant UUID** (rich_text, synced) - Deterministic identifier linked across all databases
 - **Web Link** (url) - Link to original email in Outlook
 - **Message ID**, **Conversation ID**, **MIME Message ID** - Email threading identifiers
 
@@ -126,6 +128,7 @@ This document provides comprehensive guidance for querying, adding, and analyzin
 - **Duration (seconds)** (number) - Call length
 - **Participants** (text) - Team members on call
 - **Attachments** (file) - Audio files, documents
+- **Merchant UUID** (rich_text, synced) - Deterministic identifier linked across all databases
 - **Canvas Record** (relation) → Links to merchant Canvas pages
 - **Call URL** (url) - Link to original call in OpenPhone
 - **Message URL** (text) - Link to message
@@ -152,6 +155,7 @@ This document provides comprehensive guidance for querying, adding, and analyzin
 - **Name** (text) - Contact person name
 - **Phone** (phone_number) - Contact phone
 - **Email** (email) - Contact email
+- **Merchant UUID** (rich_text, synced) - Deterministic identifier linked across all databases
 
 **Usage Pattern:**
 
@@ -191,6 +195,7 @@ This document provides comprehensive guidance for querying, adding, and analyzin
 - **Reupped** (checkbox) - Whether renewed
 - **Active** / **Complete** (checkbox) - Status flags
 - **Weekly Contact** (select) - Contact tracking
+- **Merchant UUID** (rich_text, synced) - Canonical identifier sourced from Funding DB naming
 
 **Usage Pattern:**
 
@@ -222,6 +227,7 @@ This document provides comprehensive guidance for querying, adding, and analyzin
 - **Actual Funding Balance** (number) - Remaining balance
 - **Cr. Ct.** (number) - Credit count
 - **Created By** (person) - Who created the record
+- **Merchant UUID** (rich_text, synced) - Deterministic identifier linked across all databases
 
 **Two Processor Formats:**
 

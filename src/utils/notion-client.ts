@@ -28,13 +28,37 @@ import {
 } from '../types/notion';
 import { Logger } from './logger';
 
+interface MerchantCanonicalRecord {
+  uuid: string;
+  name: string;
+  pageId: string;
+}
+
+interface CanvasMerchantInfo {
+  uuid: string | null;
+  name: string | null;
+}
+
+export interface MerchantUuidGap {
+  database: string;
+  databaseId: string;
+  pageId: string;
+  merchantName?: string | null;
+}
+
 export class NotionClient {
   private client: NotionFetchClient;
   private callsDatabaseId: string;
   private messagesDatabaseId: string;
   private canvasDatabaseId: string;
   private mailDatabaseId: string;
+  private fundingDatabaseId?: string;
+  private batchesDatabaseId?: string;
+  private contactsDatabaseId?: string;
   private logger: Logger;
+  private readonly merchantUuidProperty = 'Merchant UUID';
+  private merchantCanonicalMap: Map<string, MerchantCanonicalRecord> | null = null;
+  private canvasMerchantCache: Map<string, CanvasMerchantInfo> = new Map();
 
   constructor(env: Env, logger: Logger) {
     const notionApiKey = env.NOTION_API_KEY?.trim();
@@ -42,6 +66,9 @@ export class NotionClient {
     const messagesDatabaseId = env.NOTION_MESSAGES_DATABASE_ID?.trim();
     const canvasDatabaseId = env.NOTION_CANVAS_DATABASE_ID?.trim();
     const mailDatabaseId = env.NOTION_MAIL_DATABASE_ID?.trim();
+    const fundingDatabaseId = env.NOTION_FUNDING_DATABASE_ID?.trim();
+    const batchesDatabaseId = env.NOTION_BATCHES_DATABASE_ID?.trim();
+    const contactsDatabaseId = env.NOTION_CONTACTS_DATABASE_ID?.trim();
 
     if (!notionApiKey) {
       throw new Error('NOTION_API_KEY is missing or empty');
@@ -68,7 +95,672 @@ export class NotionClient {
     this.messagesDatabaseId = messagesDatabaseId;
     this.canvasDatabaseId = canvasDatabaseId;
     this.mailDatabaseId = mailDatabaseId;
+    this.fundingDatabaseId = fundingDatabaseId;
+    this.batchesDatabaseId = batchesDatabaseId;
+    this.contactsDatabaseId = contactsDatabaseId;
     this.logger = logger;
+
+    if (!this.fundingDatabaseId) {
+      this.logger.warn('NOTION_FUNDING_DATABASE_ID is not configured - Merchant UUID synchronization may be limited');
+    }
+
+    if (!this.batchesDatabaseId) {
+      this.logger.warn('NOTION_BATCHES_DATABASE_ID is not configured - Batch UUID synchronization may be limited');
+    }
+
+    if (!this.contactsDatabaseId) {
+      this.logger.warn('NOTION_CONTACTS_DATABASE_ID is not configured - Contact UUID synchronization may be limited');
+    }
+  }
+
+  private normalizeMerchantName(name: string | null | undefined): string | null {
+    if (!name) {
+      return null;
+    }
+    const normalized = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '')
+      .trim();
+    return normalized || null;
+  }
+
+  private extractTitleValue(property: any): string | null {
+    if (!property || !Array.isArray(property.title)) {
+      return null;
+    }
+    const text = property.title
+      .map((part: any) => part.plain_text || part.text?.content || '')
+      .join('')
+      .trim();
+    return text || null;
+  }
+
+  private extractRichTextValue(property: any): string | null {
+    if (!property) {
+      return null;
+    }
+    if (Array.isArray(property.rich_text)) {
+      const text = property.rich_text
+        .map((part: any) => part.plain_text || part.text?.content || '')
+        .join('')
+        .trim();
+      return text || null;
+    }
+    return null;
+  }
+
+  private extractRelationId(property: any): string | null {
+    if (!property || !Array.isArray(property.relation) || property.relation.length === 0) {
+      return null;
+    }
+    return property.relation[0]?.id || null;
+  }
+
+  private generateMerchantUuid(sourceId: string): string {
+    return sourceId.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  }
+
+  private async loadMerchantCanonicalMap(): Promise<Map<string, MerchantCanonicalRecord>> {
+    if (this.merchantCanonicalMap) {
+      return this.merchantCanonicalMap;
+    }
+
+    const map = new Map<string, MerchantCanonicalRecord>();
+
+    if (!this.fundingDatabaseId) {
+      this.merchantCanonicalMap = map;
+      return map;
+    }
+
+    let startCursor: string | undefined;
+
+    do {
+      const response = await this.client.databases.query({
+        database_id: this.fundingDatabaseId,
+        page_size: 100,
+        start_cursor: startCursor,
+      });
+
+      for (const result of response.results || []) {
+        const properties = (result as any).properties || {};
+        const merchantName = this.extractTitleValue(properties['Merchant'] || properties['Name']);
+        if (!merchantName) {
+          continue;
+        }
+
+        const normalized = this.normalizeMerchantName(merchantName);
+        if (!normalized) {
+          continue;
+        }
+
+        let merchantUuid = this.extractRichTextValue(properties[this.merchantUuidProperty]);
+        if (!merchantUuid) {
+          merchantUuid = this.generateMerchantUuid(result.id);
+
+          try {
+            await this.client.pages.update({
+              page_id: result.id,
+              properties: {
+                [this.merchantUuidProperty]: createRichText(merchantUuid),
+              },
+            });
+          } catch (error) {
+            this.logger.error('Failed to set Merchant UUID on Funding record', {
+              pageId: result.id,
+              error: String(error),
+            });
+          }
+        }
+
+        map.set(normalized, {
+          uuid: merchantUuid,
+          name: merchantName,
+          pageId: result.id,
+        });
+      }
+
+      startCursor = response.has_more ? response.next_cursor : undefined;
+    } while (startCursor);
+
+    this.merchantCanonicalMap = map;
+    return map;
+  }
+
+  private async lookupMerchantUuidByName(name: string | null | undefined): Promise<string | null> {
+    const normalized = this.normalizeMerchantName(name || null);
+    if (!normalized) {
+      return null;
+    }
+
+    const map = await this.loadMerchantCanonicalMap();
+    return map.get(normalized)?.uuid || null;
+  }
+
+  async getCanvasMerchantInfo(canvasId: string): Promise<CanvasMerchantInfo> {
+    if (this.canvasMerchantCache.has(canvasId)) {
+      return this.canvasMerchantCache.get(canvasId)!;
+    }
+
+    try {
+      const page = await this.client.pages.retrieve({ page_id: canvasId });
+      const properties = page.properties || {};
+      const merchantName = this.extractTitleValue(properties['Merchant Name'] || properties['Name']);
+      let merchantUuid = this.extractRichTextValue(properties[this.merchantUuidProperty]);
+
+      if (!merchantUuid && merchantName) {
+        merchantUuid = await this.lookupMerchantUuidByName(merchantName);
+        if (merchantUuid) {
+          try {
+            await this.client.pages.update({
+              page_id: canvasId,
+              properties: {
+                [this.merchantUuidProperty]: createRichText(merchantUuid),
+              },
+            });
+          } catch (error) {
+            this.logger.error('Failed to update Canvas Merchant UUID', {
+              canvasId,
+              error: String(error),
+            });
+          }
+        }
+      }
+
+      const info: CanvasMerchantInfo = {
+        uuid: merchantUuid || null,
+        name: merchantName || null,
+      };
+
+      this.canvasMerchantCache.set(canvasId, info);
+      return info;
+    } catch (error) {
+      this.logger.error('Failed to retrieve Canvas merchant info', {
+        canvasId,
+        error: String(error),
+      });
+
+      const info: CanvasMerchantInfo = { uuid: null, name: null };
+      this.canvasMerchantCache.set(canvasId, info);
+      return info;
+    }
+  }
+
+  async resolveMerchantUuidForCanvas(
+    canvasId: string | null,
+    merchantNameHint?: string | null
+  ): Promise<string | null> {
+    if (canvasId) {
+      const info = await this.getCanvasMerchantInfo(canvasId);
+      if (info.uuid) {
+        return info.uuid;
+      }
+
+      if (info.name) {
+        const uuid = await this.lookupMerchantUuidByName(info.name);
+        if (uuid) {
+          try {
+            await this.client.pages.update({
+              page_id: canvasId,
+              properties: {
+                [this.merchantUuidProperty]: createRichText(uuid),
+              },
+            });
+            this.canvasMerchantCache.set(canvasId, { uuid, name: info.name });
+          } catch (error) {
+            this.logger.error('Failed to persist Canvas Merchant UUID', {
+              canvasId,
+              error: String(error),
+            });
+          }
+          return uuid;
+        }
+      }
+    }
+
+    if (merchantNameHint) {
+      const uuid = await this.lookupMerchantUuidByName(merchantNameHint);
+      if (uuid && canvasId) {
+        try {
+          await this.client.pages.update({
+            page_id: canvasId,
+            properties: {
+              [this.merchantUuidProperty]: createRichText(uuid),
+            },
+          });
+          this.canvasMerchantCache.set(canvasId, { uuid, name: merchantNameHint });
+        } catch (error) {
+          this.logger.error('Failed to persist Canvas Merchant UUID from hint', {
+            canvasId,
+            merchantNameHint,
+            error: String(error),
+          });
+        }
+      }
+      return uuid;
+    }
+
+    return null;
+  }
+
+  private async iterateDatabase(
+    databaseId: string,
+    handler: (page: any) => Promise<void>
+  ): Promise<void> {
+    let startCursor: string | undefined;
+
+    do {
+      const response = await this.client.databases.query({
+        database_id: databaseId,
+        page_size: 100,
+        start_cursor: startCursor,
+      });
+
+      for (const result of response.results || []) {
+        await handler(result);
+      }
+
+      startCursor = response.has_more ? response.next_cursor : undefined;
+    } while (startCursor);
+  }
+
+  async synchronizeMerchantUuids(): Promise<{ updated: number; missing: MerchantUuidGap[] }> {
+    let updated = 0;
+    const missing: MerchantUuidGap[] = [];
+
+    await this.loadMerchantCanonicalMap();
+
+    // Canvas database (primary operational hub)
+    await this.iterateDatabase(this.canvasDatabaseId, async (page) => {
+      const properties = (page as any).properties || {};
+      const merchantName = this.extractTitleValue(properties['Merchant Name'] || properties['Name']);
+      let merchantUuid = this.extractRichTextValue(properties[this.merchantUuidProperty]);
+
+      if (!merchantUuid && merchantName) {
+        merchantUuid = await this.lookupMerchantUuidByName(merchantName);
+      }
+
+      if (merchantUuid) {
+        if (merchantUuid !== this.extractRichTextValue(properties[this.merchantUuidProperty])) {
+          try {
+            await this.client.pages.update({
+              page_id: page.id,
+              properties: {
+                [this.merchantUuidProperty]: createRichText(merchantUuid),
+              },
+            });
+            updated++;
+          } catch (error) {
+            this.logger.error('Failed to update Canvas merchant UUID during sync', {
+              pageId: page.id,
+              error: String(error),
+            });
+          }
+        }
+
+        this.canvasMerchantCache.set(page.id, {
+          uuid: merchantUuid,
+          name: merchantName || null,
+        });
+      } else {
+        missing.push({ database: 'canvas', databaseId: this.canvasDatabaseId, pageId: page.id, merchantName });
+      }
+    });
+
+    // Funding database ensures canonical source is populated
+    if (this.fundingDatabaseId) {
+      await this.iterateDatabase(this.fundingDatabaseId, async (page) => {
+        const properties = (page as any).properties || {};
+        const merchantName = this.extractTitleValue(properties['Merchant'] || properties['Name']);
+        let merchantUuid = this.extractRichTextValue(properties[this.merchantUuidProperty]);
+
+        if (!merchantUuid) {
+          merchantUuid = this.generateMerchantUuid(page.id);
+          try {
+            await this.client.pages.update({
+              page_id: page.id,
+              properties: {
+                [this.merchantUuidProperty]: createRichText(merchantUuid),
+              },
+            });
+            updated++;
+          } catch (error) {
+            this.logger.error('Failed to backfill Funding merchant UUID', {
+              pageId: page.id,
+              error: String(error),
+            });
+          }
+        }
+
+        if (!merchantUuid) {
+          missing.push({
+            database: 'funding',
+            databaseId: this.fundingDatabaseId!,
+            pageId: page.id,
+            merchantName,
+          });
+        }
+      });
+    }
+
+    // Contacts database (if configured)
+    if (this.contactsDatabaseId) {
+      await this.iterateDatabase(this.contactsDatabaseId, async (page) => {
+        const properties = (page as any).properties || {};
+        const merchantName = this.extractTitleValue(properties['Company'] || properties['Name']);
+        const currentUuid = this.extractRichTextValue(properties[this.merchantUuidProperty]);
+        const canonicalUuid = await this.lookupMerchantUuidByName(merchantName);
+
+        if (canonicalUuid && canonicalUuid !== currentUuid) {
+          try {
+            await this.client.pages.update({
+              page_id: page.id,
+              properties: {
+                [this.merchantUuidProperty]: createRichText(canonicalUuid),
+              },
+            });
+            updated++;
+          } catch (error) {
+            this.logger.error('Failed to sync Contact merchant UUID', {
+              pageId: page.id,
+              error: String(error),
+            });
+          }
+        } else if (!canonicalUuid) {
+          missing.push({
+            database: 'contacts',
+            databaseId: this.contactsDatabaseId!,
+            pageId: page.id,
+            merchantName,
+          });
+        }
+      });
+    }
+
+    // Batches database (if configured)
+    if (this.batchesDatabaseId) {
+      await this.iterateDatabase(this.batchesDatabaseId, async (page) => {
+        const properties = (page as any).properties || {};
+        const merchantName = this.extractTitleValue(properties['Name']);
+        const currentUuid = this.extractRichTextValue(properties[this.merchantUuidProperty]);
+        const canonicalUuid = await this.lookupMerchantUuidByName(merchantName);
+
+        if (canonicalUuid && canonicalUuid !== currentUuid) {
+          try {
+            await this.client.pages.update({
+              page_id: page.id,
+              properties: {
+                [this.merchantUuidProperty]: createRichText(canonicalUuid),
+              },
+            });
+            updated++;
+          } catch (error) {
+            this.logger.error('Failed to sync Batch merchant UUID', {
+              pageId: page.id,
+              error: String(error),
+            });
+          }
+        } else if (!canonicalUuid) {
+          missing.push({
+            database: 'batches',
+            databaseId: this.batchesDatabaseId!,
+            pageId: page.id,
+            merchantName,
+          });
+        }
+      });
+    }
+
+    // Calls database
+    await this.iterateDatabase(this.callsDatabaseId, async (page) => {
+      const properties = (page as any).properties || {};
+      const relationId = this.extractRelationId(properties['Canvas'] || properties['Canvas Record']);
+      const currentUuid = this.extractRichTextValue(properties[this.merchantUuidProperty]);
+      let resolvedUuid: string | null = null;
+      let merchantName: string | null = null;
+
+      if (relationId) {
+        const info = await this.getCanvasMerchantInfo(relationId);
+        merchantName = info.name;
+        resolvedUuid = info.uuid || (info.name ? await this.lookupMerchantUuidByName(info.name) : null);
+      }
+
+      if (resolvedUuid && resolvedUuid !== currentUuid) {
+        try {
+          await this.client.pages.update({
+            page_id: page.id,
+            properties: {
+              [this.merchantUuidProperty]: createRichText(resolvedUuid),
+            },
+          });
+          updated++;
+        } catch (error) {
+          this.logger.error('Failed to sync Call merchant UUID', {
+            pageId: page.id,
+            error: String(error),
+          });
+        }
+      } else if (!resolvedUuid) {
+        missing.push({
+          database: 'calls',
+          databaseId: this.callsDatabaseId,
+          pageId: page.id,
+          merchantName,
+        });
+      }
+    });
+
+    // Messages database
+    await this.iterateDatabase(this.messagesDatabaseId, async (page) => {
+      const properties = (page as any).properties || {};
+      const relationId = this.extractRelationId(properties['Canvas']);
+      const currentUuid = this.extractRichTextValue(properties[this.merchantUuidProperty]);
+      let resolvedUuid: string | null = null;
+      let merchantName: string | null = null;
+
+      if (relationId) {
+        const info = await this.getCanvasMerchantInfo(relationId);
+        merchantName = info.name;
+        resolvedUuid = info.uuid || (info.name ? await this.lookupMerchantUuidByName(info.name) : null);
+      }
+
+      if (resolvedUuid && resolvedUuid !== currentUuid) {
+        try {
+          await this.client.pages.update({
+            page_id: page.id,
+            properties: {
+              [this.merchantUuidProperty]: createRichText(resolvedUuid),
+            },
+          });
+          updated++;
+        } catch (error) {
+          this.logger.error('Failed to sync Message merchant UUID', {
+            pageId: page.id,
+            error: String(error),
+          });
+        }
+      } else if (!resolvedUuid) {
+        missing.push({
+          database: 'messages',
+          databaseId: this.messagesDatabaseId,
+          pageId: page.id,
+          merchantName,
+        });
+      }
+    });
+
+    // Mail database
+    await this.iterateDatabase(this.mailDatabaseId, async (page) => {
+      const properties = (page as any).properties || {};
+      const relationId = this.extractRelationId(properties['Canvas']);
+      const currentUuid = this.extractRichTextValue(properties[this.merchantUuidProperty]);
+      let resolvedUuid: string | null = null;
+      let merchantName: string | null = null;
+
+      if (relationId) {
+        const info = await this.getCanvasMerchantInfo(relationId);
+        merchantName = info.name;
+        resolvedUuid = info.uuid || (info.name ? await this.lookupMerchantUuidByName(info.name) : null);
+      }
+
+      if (resolvedUuid && resolvedUuid !== currentUuid) {
+        try {
+          await this.client.pages.update({
+            page_id: page.id,
+            properties: {
+              [this.merchantUuidProperty]: createRichText(resolvedUuid),
+            },
+          });
+          updated++;
+        } catch (error) {
+          this.logger.error('Failed to sync Mail merchant UUID', {
+            pageId: page.id,
+            error: String(error),
+          });
+        }
+      } else if (!resolvedUuid) {
+        missing.push({
+          database: 'mail',
+          databaseId: this.mailDatabaseId,
+          pageId: page.id,
+          merchantName,
+        });
+      }
+    });
+
+    return { updated, missing };
+  }
+
+  async repairMerchantUuid(gap: MerchantUuidGap): Promise<string | null> {
+    await this.loadMerchantCanonicalMap();
+
+    try {
+      const page = await this.client.pages.retrieve({ page_id: gap.pageId });
+      const properties = page.properties || {};
+
+      switch (gap.database) {
+        case 'canvas': {
+          const merchantName = this.extractTitleValue(properties['Merchant Name'] || properties['Name']);
+          const uuid = await this.lookupMerchantUuidByName(merchantName);
+          if (uuid) {
+            await this.client.pages.update({
+              page_id: gap.pageId,
+              properties: {
+                [this.merchantUuidProperty]: createRichText(uuid),
+              },
+            });
+            this.canvasMerchantCache.set(gap.pageId, { uuid, name: merchantName || null });
+            return uuid;
+          }
+          return null;
+        }
+
+        case 'funding': {
+          let uuid = this.extractRichTextValue(properties[this.merchantUuidProperty]);
+          if (!uuid) {
+            uuid = this.generateMerchantUuid(gap.pageId);
+            await this.client.pages.update({
+              page_id: gap.pageId,
+              properties: {
+                [this.merchantUuidProperty]: createRichText(uuid),
+              },
+            });
+          }
+          return uuid;
+        }
+
+        case 'contacts': {
+          const merchantName = this.extractTitleValue(properties['Company'] || properties['Name']);
+          const uuid = await this.lookupMerchantUuidByName(merchantName);
+          if (uuid) {
+            await this.client.pages.update({
+              page_id: gap.pageId,
+              properties: {
+                [this.merchantUuidProperty]: createRichText(uuid),
+              },
+            });
+          }
+          return uuid;
+        }
+
+        case 'batches': {
+          const merchantName = this.extractTitleValue(properties['Name']);
+          const uuid = await this.lookupMerchantUuidByName(merchantName);
+          if (uuid) {
+            await this.client.pages.update({
+              page_id: gap.pageId,
+              properties: {
+                [this.merchantUuidProperty]: createRichText(uuid),
+              },
+            });
+          }
+          return uuid;
+        }
+
+        case 'calls': {
+          const relationId = this.extractRelationId(properties['Canvas'] || properties['Canvas Record']);
+          if (!relationId) {
+            return null;
+          }
+          const info = await this.getCanvasMerchantInfo(relationId);
+          const uuid = info.uuid;
+          if (uuid) {
+            await this.client.pages.update({
+              page_id: gap.pageId,
+              properties: {
+                [this.merchantUuidProperty]: createRichText(uuid),
+              },
+            });
+          }
+          return uuid;
+        }
+
+        case 'messages': {
+          const relationId = this.extractRelationId(properties['Canvas']);
+          if (!relationId) {
+            return null;
+          }
+          const info = await this.getCanvasMerchantInfo(relationId);
+          const uuid = info.uuid;
+          if (uuid) {
+            await this.client.pages.update({
+              page_id: gap.pageId,
+              properties: {
+                [this.merchantUuidProperty]: createRichText(uuid),
+              },
+            });
+          }
+          return uuid;
+        }
+
+        case 'mail': {
+          const relationId = this.extractRelationId(properties['Canvas']);
+          if (!relationId) {
+            return null;
+          }
+          const info = await this.getCanvasMerchantInfo(relationId);
+          const uuid = info.uuid;
+          if (uuid) {
+            await this.client.pages.update({
+              page_id: gap.pageId,
+              properties: {
+                [this.merchantUuidProperty]: createRichText(uuid),
+              },
+            });
+          }
+          return uuid;
+        }
+
+        default:
+          this.logger.warn('Unknown database type for Merchant UUID repair', gap);
+          return null;
+      }
+    } catch (error) {
+      this.logger.error('Failed to repair Merchant UUID', {
+        gap,
+        error: String(error),
+      });
+      return null;
+    }
   }
 
   // ========================================================================
@@ -86,7 +778,7 @@ export class NotionClient {
     voicemail: CallVoicemail | null;
     recordingUrl?: string; // R2 URL if recording was uploaded
     voicemailUrl?: string; // R2 URL if voicemail was uploaded
-  }): Promise<string> {
+  }): Promise<{ pageId: string; canvasId: string | null; merchantUuid: string | null }> {
     const { call, recordings, transcript, summary, voicemail, recordingUrl, voicemailUrl } = data;
 
     this.logger.info('Creating call page in Notion', { callId: call.id });
@@ -157,6 +849,8 @@ export class NotionClient {
     // Format participants
     const participantsText = call.participants.join(', ');
 
+    const merchantUuid = await this.resolveMerchantUuidForCanvas(canvasId);
+
     const properties = {
       'Call ID': createTitle(call.id),
       Direction: createSelect(call.direction),
@@ -214,6 +908,7 @@ export class NotionClient {
 
       // Canvas Relation
       Canvas: createRelation(canvasId ? [canvasId] : []),
+      'Merchant UUID': createRichText(merchantUuid || ''),
 
       // Sync tracking
       'Synced At': createDate(new Date().toISOString()),
@@ -233,7 +928,11 @@ export class NotionClient {
         notionPageId: response.id,
       });
 
-      return response.id;
+      return {
+        pageId: response.id,
+        canvasId,
+        merchantUuid,
+      };
     } catch (error) {
       this.logger.error('Failed to create call page', error);
       throw error;
@@ -254,10 +953,39 @@ export class NotionClient {
       recordingUrl?: string;
       voicemailUrl?: string;
     }
-  ): Promise<void> {
+  ): Promise<{ canvasId: string | null; merchantUuid: string | null }> {
     const { call, recordings, transcript, summary, voicemail, recordingUrl, voicemailUrl } = data;
 
     this.logger.info('Updating call page in Notion', { callId: call.id, pageId });
+
+    let canvasId: string | null = null;
+
+    const MY_PHONE_NUMBER = '+13365185544';
+    const otherParticipants = call.participants.filter(p => {
+      const normalized = p.replace(/\D/g, '');
+      const myNormalized = MY_PHONE_NUMBER.replace(/\D/g, '');
+      return normalized !== myNormalized;
+    });
+
+    if (call.direction === 'incoming') {
+      for (const participant of otherParticipants) {
+        const foundCanvas = await this.findCanvasByPhone(participant);
+        if (foundCanvas) {
+          canvasId = foundCanvas;
+          break;
+        }
+      }
+    } else if (call.direction === 'outgoing') {
+      for (const participant of otherParticipants) {
+        const foundCanvas = await this.findCanvasByPhone(participant);
+        if (foundCanvas) {
+          canvasId = foundCanvas;
+          break;
+        }
+      }
+    }
+
+    const merchantUuid = await this.resolveMerchantUuidForCanvas(canvasId);
 
     // Format transcript dialogue
     const transcriptText = transcript?.dialogue
@@ -298,6 +1026,9 @@ export class NotionClient {
       'Voicemail URL': createUrl(voicemailUrl || voicemail?.url || null),
       'Voicemail Transcript': createRichText(voicemail?.transcription || ''),
 
+      Canvas: createRelation(canvasId ? [canvasId] : []),
+      'Merchant UUID': createRichText(merchantUuid || ''),
+
       'Last Updated': createDate(new Date().toISOString()),
     };
 
@@ -308,6 +1039,7 @@ export class NotionClient {
       });
 
       this.logger.info('Call page updated successfully', { callId: call.id, pageId });
+      return { canvasId, merchantUuid };
     } catch (error) {
       this.logger.error('Failed to update call page', error);
       throw error;
@@ -321,7 +1053,7 @@ export class NotionClient {
   /**
    * Create a message page in Notion
    */
-  async createMessagePage(message: Message): Promise<string> {
+  async createMessagePage(message: Message): Promise<{ pageId: string; canvasId: string | null; merchantUuid: string | null }> {
     this.logger.info('Creating message page in Notion', { messageId: message.id });
 
     // Find Canvas relation by phone number
@@ -352,6 +1084,8 @@ export class NotionClient {
       }
     }
 
+    const merchantUuid = await this.resolveMerchantUuidForCanvas(canvasId);
+
     const properties = {
       'Message ID': createTitle(message.id),
       Direction: createSelect(message.direction),
@@ -370,6 +1104,7 @@ export class NotionClient {
       ),
       'Conversation ID': createRichText(''), // Could be extracted from related calls/messages
       Canvas: createRelation(canvasId ? [canvasId] : []),
+      'Merchant UUID': createRichText(merchantUuid || ''),
       'Raw Data': createRichText(JSON.stringify(message, null, 2)),
       'Synced At': createDate(new Date().toISOString()),
     };
@@ -387,7 +1122,11 @@ export class NotionClient {
         notionPageId: response.id,
       });
 
-      return response.id;
+      return {
+        pageId: response.id,
+        canvasId,
+        merchantUuid,
+      };
     } catch (error) {
       this.logger.error('Failed to create message page', error);
       throw error;
@@ -397,13 +1136,18 @@ export class NotionClient {
   /**
    * Update an existing message page
    */
-  async updateMessagePage(pageId: string, message: Message): Promise<void> {
+  async updateMessagePage(pageId: string, message: Message): Promise<{ canvasId: string | null; merchantUuid: string | null }> {
     this.logger.info('Updating message page in Notion', { messageId: message.id, pageId });
+
+    const canvasId = await this.findCanvasByPhone(message.direction === 'incoming' ? message.from : (message.to[0] || ''));
+    const merchantUuid = await this.resolveMerchantUuidForCanvas(canvasId);
 
     const properties = {
       Status: createSelect(message.status),
       'Updated At': createDate(message.updatedAt),
       Content: createRichText(message.text),
+      Canvas: createRelation(canvasId ? [canvasId] : []),
+      'Merchant UUID': createRichText(merchantUuid || ''),
     };
 
     try {
@@ -413,6 +1157,7 @@ export class NotionClient {
       });
 
       this.logger.info('Message page updated successfully', { messageId: message.id, pageId });
+      return { canvasId, merchantUuid };
     } catch (error) {
       this.logger.error('Failed to update message page', error);
       throw error;
@@ -426,7 +1171,7 @@ export class NotionClient {
   /**
    * Create a mail page in Notion
    */
-  async createMailPage(mail: Mail): Promise<string> {
+  async createMailPage(mail: Mail): Promise<{ pageId: string; canvasId: string | null; merchantUuid: string | null }> {
     this.logger.info('Creating mail page in Notion', { mailId: mail.id });
 
     // Find Canvas relation by email address
@@ -441,6 +1186,8 @@ export class NotionClient {
     if (emailToLookup) {
       canvasId = await this.findCanvasByEmail(emailToLookup);
     }
+
+    const merchantUuid = await this.resolveMerchantUuidForCanvas(canvasId);
 
     const properties = {
       'Subject': createTitle(mail.subject || '(No Subject)'),
@@ -458,6 +1205,7 @@ export class NotionClient {
         mail.attachments?.map(a => `${a.filename} (${a.contentType}, ${a.size} bytes)`).join('\n') || ''
       ),
       'Canvas': createRelation(canvasId ? [canvasId] : []),
+      'Merchant UUID': createRichText(merchantUuid || ''),
       'Raw Data': createRichText(JSON.stringify(mail, null, 2)),
       'Synced At': createDate(new Date().toISOString()),
     };
@@ -475,7 +1223,11 @@ export class NotionClient {
         notionPageId: response.id,
       });
 
-      return response.id;
+      return {
+        pageId: response.id,
+        canvasId,
+        merchantUuid,
+      };
     } catch (error) {
       this.logger.error('Failed to create mail page', error);
       throw error;
@@ -485,13 +1237,20 @@ export class NotionClient {
   /**
    * Update an existing mail page
    */
-  async updateMailPage(pageId: string, mail: Mail): Promise<void> {
+  async updateMailPage(pageId: string, mail: Mail): Promise<{ canvasId: string | null; merchantUuid: string | null }> {
     this.logger.info('Updating mail page in Notion', { mailId: mail.id, pageId });
+
+    const canvasId = mail.direction === 'incoming'
+      ? await this.findCanvasByEmail(mail.from)
+      : await this.findCanvasByEmail(mail.to[0] || '');
+    const merchantUuid = await this.resolveMerchantUuidForCanvas(canvasId);
 
     const properties = {
       'Status': createSelect(mail.status),
       'Updated At': createDate(mail.updatedAt),
       'Body': createRichText(mail.body),
+      'Canvas': createRelation(canvasId ? [canvasId] : []),
+      'Merchant UUID': createRichText(merchantUuid || ''),
     };
 
     try {
@@ -501,6 +1260,7 @@ export class NotionClient {
       });
 
       this.logger.info('Mail page updated successfully', { mailId: mail.id, pageId });
+      return { canvasId, merchantUuid };
     } catch (error) {
       this.logger.error('Failed to update mail page', error);
       throw error;
@@ -624,6 +1384,7 @@ export class NotionClient {
 
           if (phoneResponse.results.length > 0) {
             const canvasId = phoneResponse.results[0].id;
+            await this.getCanvasMerchantInfo(canvasId);
             this.logger.info('Found Canvas record (phone_number field)', {
               phoneNumber,
               format,
@@ -659,6 +1420,7 @@ export class NotionClient {
 
           if (textResponse.results.length > 0) {
             const canvasId = textResponse.results[0].id;
+            await this.getCanvasMerchantInfo(canvasId);
             this.logger.info('Found Canvas record (rich_text field)', {
               phoneNumber,
               format,
@@ -717,6 +1479,7 @@ export class NotionClient {
 
       if (response.results.length > 0) {
         const canvasId = response.results[0].id;
+        await this.getCanvasMerchantInfo(canvasId);
         this.logger.info('Found Canvas record by email', {
           email: normalizedEmail,
           canvasId,
@@ -773,7 +1536,10 @@ export class NotionClient {
       result.canvas.sampleRecords = canvasRecords.results.map((page: any) => {
         const props = page.properties;
         const title = Object.values(props).find((p: any) => p.type === 'title');
-        const titleText = title && 'title' in title ? title.title.map((t: any) => t.plain_text).join('') : '';
+        const titleText =
+          title && typeof title === 'object' && 'title' in title && Array.isArray((title as any).title)
+            ? (title as any).title.map((t: any) => t.plain_text).join('')
+            : '';
 
         let phoneValue = null;
         let phoneType = null;

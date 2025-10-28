@@ -24,6 +24,9 @@ export interface Env {
   NOTION_MESSAGES_DATABASE_ID: string;
   NOTION_CANVAS_DATABASE_ID: string;
   NOTION_MAIL_DATABASE_ID: string;
+  NOTION_FUNDING_DATABASE_ID?: string;
+  NOTION_BATCHES_DATABASE_ID?: string;
+  NOTION_CONTACTS_DATABASE_ID?: string;
   WEBHOOK_SECRET?: string; // Optional webhook signature validation
   ALERT_WEBHOOK_URL?: string; // Optional alert webhook (Slack, Discord, etc.)
 
@@ -92,6 +95,7 @@ export interface SyncState {
   resourceType: 'call' | 'message';
   status: 'pending' | 'in_progress' | 'completed' | 'failed';
   notionPageId?: string;
+  merchantUuid?: string | null;
   attempts: number;
   lastAttempt: string; // ISO 8601
   error?: string;

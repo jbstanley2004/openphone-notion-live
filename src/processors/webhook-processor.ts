@@ -17,7 +17,7 @@ import type {
 } from '../types/openphone';
 import { Logger } from '../utils/logger';
 import { OpenPhoneClient } from '../utils/openphone-client';
-import { NotionClient } from '../utils/notion-client';
+import { NotionClient, type MerchantUuidGap } from '../utils/notion-client';
 import { R2Client } from '../utils/r2-client';
 import { RateLimiter } from '../utils/rate-limiter';
 import {
@@ -36,6 +36,12 @@ export async function processWebhookEvent(
   env: Env,
   logger: Logger
 ): Promise<void> {
+  if (queuedEvent.type === 'maintenance.merchant_uuid_backfill') {
+    const notionClient = new NotionClient(env, logger);
+    await handleMerchantUuidBackfill(queuedEvent.data as MerchantUuidGap, env, logger, notionClient);
+    return;
+  }
+
   const event = queuedEvent.data as WebhookEvent;
 
   logger.info('Processing webhook event', {
@@ -98,6 +104,35 @@ export async function processWebhookEvent(
     }
 
     throw error; // Re-throw to trigger retry
+  }
+}
+
+async function handleMerchantUuidBackfill(
+  gap: MerchantUuidGap,
+  env: Env,
+  logger: Logger,
+  notionClient: NotionClient
+): Promise<void> {
+  logger.info('Handling merchant UUID correction task', {
+    database: gap.database,
+    pageId: gap.pageId,
+    merchantName: gap.merchantName,
+  });
+
+  const uuid = await notionClient.repairMerchantUuid(gap);
+
+  if (uuid) {
+    logger.info('Merchant UUID correction applied', {
+      database: gap.database,
+      pageId: gap.pageId,
+      merchantUuid: uuid,
+    });
+  } else {
+    logger.warn('Merchant UUID correction could not determine UUID', {
+      database: gap.database,
+      pageId: gap.pageId,
+      merchantName: gap.merchantName,
+    });
   }
 }
 
@@ -168,24 +203,34 @@ async function handleCallCompleted(
 
     // Sync to Notion
     const existingPageId = await notionClient.callPageExists(call.id);
-    if (existingPageId) {
-      await notionClient.updateCallPage(existingPageId, {
-        ...completeData,
-        recordingUrl,
-        voicemailUrl,
-      });
-      logger.info('Call page updated in Notion', { callId: call.id, pageId: existingPageId });
-    } else {
-      const pageId = await notionClient.createCallPage({
-        ...completeData,
-        recordingUrl,
-        voicemailUrl,
-      });
-      logger.info('Call page created in Notion', { callId: call.id, pageId });
+    let notionPageId: string;
+    let merchantUuid: string | null = null;
+    let canvasId: string | null = null;
 
-      // Mark as synced
-      await markAsSynced(env.SYNC_STATE, call.id, 'call', pageId);
+    if (existingPageId) {
+      const result = await notionClient.updateCallPage(existingPageId, {
+        ...completeData,
+        recordingUrl,
+        voicemailUrl,
+      });
+      notionPageId = existingPageId;
+      merchantUuid = result.merchantUuid;
+      canvasId = result.canvasId;
+      logger.info('Call page updated in Notion', { callId: call.id, pageId: existingPageId, merchantUuid });
+    } else {
+      const result = await notionClient.createCallPage({
+        ...completeData,
+        recordingUrl,
+        voicemailUrl,
+      });
+      notionPageId = result.pageId;
+      merchantUuid = result.merchantUuid;
+      canvasId = result.canvasId;
+      logger.info('Call page created in Notion', { callId: call.id, pageId: notionPageId, merchantUuid });
     }
+
+    // Mark as synced (always update metadata)
+    await markAsSynced(env.SYNC_STATE, call.id, 'call', notionPageId, merchantUuid);
   } catch (error) {
     await markAsFailed(env.SYNC_STATE, call.id, 'call', String(error), existingSync?.attempts || 0 + 1);
     throw error;
@@ -227,18 +272,26 @@ async function handleCallRecordingCompleted(
 
     // Update or create Notion page
     const existingPageId = await notionClient.callPageExists(call.id);
+    let notionPageId: string;
+    let merchantUuid: string | null = null;
+
     if (existingPageId) {
-      await notionClient.updateCallPage(existingPageId, {
+      const result = await notionClient.updateCallPage(existingPageId, {
         ...completeData,
         recordingUrl,
       });
+      notionPageId = existingPageId;
+      merchantUuid = result.merchantUuid;
     } else {
-      const pageId = await notionClient.createCallPage({
+      const result = await notionClient.createCallPage({
         ...completeData,
         recordingUrl,
       });
-      await markAsSynced(env.SYNC_STATE, call.id, 'call', pageId);
+      notionPageId = result.pageId;
+      merchantUuid = result.merchantUuid;
     }
+
+    await markAsSynced(env.SYNC_STATE, call.id, 'call', notionPageId, merchantUuid);
   } catch (error) {
     logger.error('Failed to handle recording.completed', error);
     throw error;
@@ -262,12 +315,20 @@ async function handleCallTranscriptCompleted(
     const completeData = await openPhoneClient.getCompleteCall(transcript.callId);
 
     const existingPageId = await notionClient.callPageExists(transcript.callId);
+    let notionPageId: string;
+    let merchantUuid: string | null = null;
+
     if (existingPageId) {
-      await notionClient.updateCallPage(existingPageId, completeData);
+      const result = await notionClient.updateCallPage(existingPageId, completeData);
+      notionPageId = existingPageId;
+      merchantUuid = result.merchantUuid;
     } else {
-      const pageId = await notionClient.createCallPage(completeData);
-      await markAsSynced(env.SYNC_STATE, transcript.callId, 'call', pageId);
+      const result = await notionClient.createCallPage(completeData);
+      notionPageId = result.pageId;
+      merchantUuid = result.merchantUuid;
     }
+
+    await markAsSynced(env.SYNC_STATE, transcript.callId, 'call', notionPageId, merchantUuid);
   } catch (error) {
     logger.error('Failed to handle transcript.completed', error);
     throw error;
@@ -291,12 +352,20 @@ async function handleCallSummaryCompleted(
     const completeData = await openPhoneClient.getCompleteCall(summary.callId);
 
     const existingPageId = await notionClient.callPageExists(summary.callId);
+    let notionPageId: string;
+    let merchantUuid: string | null = null;
+
     if (existingPageId) {
-      await notionClient.updateCallPage(existingPageId, completeData);
+      const result = await notionClient.updateCallPage(existingPageId, completeData);
+      notionPageId = existingPageId;
+      merchantUuid = result.merchantUuid;
     } else {
-      const pageId = await notionClient.createCallPage(completeData);
-      await markAsSynced(env.SYNC_STATE, summary.callId, 'call', pageId);
+      const result = await notionClient.createCallPage(completeData);
+      notionPageId = result.pageId;
+      merchantUuid = result.merchantUuid;
     }
+
+    await markAsSynced(env.SYNC_STATE, summary.callId, 'call', notionPageId, merchantUuid);
   } catch (error) {
     logger.error('Failed to handle summary.completed', error);
     throw error;
@@ -331,16 +400,22 @@ async function handleMessage(
 
     // Sync to Notion
     const existingPageId = await notionClient.messagePageExists(message.id);
-    if (existingPageId) {
-      await notionClient.updateMessagePage(existingPageId, latestMessage);
-      logger.info('Message page updated in Notion', { messageId: message.id, pageId: existingPageId });
-    } else {
-      const pageId = await notionClient.createMessagePage(latestMessage);
-      logger.info('Message page created in Notion', { messageId: message.id, pageId });
+    let notionPageId: string;
+    let merchantUuid: string | null = null;
 
-      // Mark as synced
-      await markAsSynced(env.SYNC_STATE, message.id, 'message', pageId);
+    if (existingPageId) {
+      const result = await notionClient.updateMessagePage(existingPageId, latestMessage);
+      notionPageId = existingPageId;
+      merchantUuid = result.merchantUuid;
+      logger.info('Message page updated in Notion', { messageId: message.id, pageId: existingPageId, merchantUuid });
+    } else {
+      const result = await notionClient.createMessagePage(latestMessage);
+      notionPageId = result.pageId;
+      merchantUuid = result.merchantUuid;
+      logger.info('Message page created in Notion', { messageId: message.id, pageId: notionPageId, merchantUuid });
     }
+
+    await markAsSynced(env.SYNC_STATE, message.id, 'message', notionPageId, merchantUuid);
   } catch (error) {
     await markAsFailed(env.SYNC_STATE, message.id, 'message', String(error), existingSync?.attempts || 0 + 1);
     throw error;

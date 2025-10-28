@@ -173,6 +173,9 @@ export interface CallPageProperties {
   // Sync tracking
   'Synced At': DateProperty;
   'Last Updated': DateProperty;
+
+  // Merchant linkage
+  'Merchant UUID': RichTextProperty;
 }
 
 // ============================================================================
@@ -209,6 +212,9 @@ export interface MessagePageProperties {
 
   // Sync tracking
   'Synced At': DateProperty;
+
+  // Merchant linkage
+  'Merchant UUID': RichTextProperty;
 }
 
 // ============================================================================

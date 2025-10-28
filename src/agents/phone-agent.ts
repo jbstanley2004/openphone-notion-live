@@ -156,6 +156,7 @@ export class PhoneAgent {
       // Create or update Notion page with AI insights
       const existingPageId = await notionClient.callPageExists(call.id);
       let notionPageId: string;
+      let merchantUuid: string | null = null;
 
       const pageData = {
         ...completeData,
@@ -171,14 +172,17 @@ export class PhoneAgent {
       };
 
       if (existingPageId) {
-        await notionClient.updateCallPage(existingPageId, pageData);
+        const result = await notionClient.updateCallPage(existingPageId, pageData);
         notionPageId = existingPageId;
+        merchantUuid = result.merchantUuid;
       } else {
-        notionPageId = await notionClient.createCallPage(pageData);
+        const result = await notionClient.createCallPage(pageData);
+        notionPageId = result.pageId;
+        merchantUuid = result.merchantUuid;
       }
 
       // Index in Vectorize for semantic search
-      await indexCall(call, transcript, aiAnalysis.summary, notionPageId, this.env, this.logger);
+      await indexCall(call, transcript, aiAnalysis.summary, notionPageId, merchantUuid, this.env, this.logger);
 
       // Find similar calls (duplicate lead detection)
       const similarCalls = await findSimilarCalls(call.id, 3, this.env, this.logger);
@@ -214,6 +218,7 @@ export class PhoneAgent {
         callId: call.id,
         notionPageId,
         canvasId,
+        merchantUuid,
         sentiment: aiAnalysis.sentiment.label,
         leadScore: aiAnalysis.leadScore,
         durationMs: duration,

@@ -156,7 +156,7 @@ export class CallProcessingWorkflow {
     });
 
     // Step 6: Create/update Notion page (final step)
-    const notionPageId = await step.do('create-notion', async () => {
+    const notionResult = await step.do('create-notion', async () => {
       logger.info('Creating/updating Notion page', { callId });
 
       const notionClient = new NotionClient(env, logger);
@@ -176,24 +176,26 @@ export class CallProcessingWorkflow {
 
       const existingPageId = await notionClient.callPageExists(callId);
 
-      let pageId: string;
       if (existingPageId) {
-        await notionClient.updateCallPage(existingPageId, pageData);
-        pageId = existingPageId;
-      } else {
-        pageId = await notionClient.createCallPage(pageData);
+        const result = await notionClient.updateCallPage(existingPageId, pageData);
+        logger.info('Notion page created/updated', { callId, pageId: existingPageId, merchantUuid: result.merchantUuid });
+        return { pageId: existingPageId, merchantUuid: result.merchantUuid };
       }
 
-      logger.info('Notion page created/updated', { callId, pageId });
-      return pageId;
+      const result = await notionClient.createCallPage(pageData);
+      logger.info('Notion page created/updated', { callId, pageId: result.pageId, merchantUuid: result.merchantUuid });
+      return { pageId: result.pageId, merchantUuid: result.merchantUuid };
     });
+
+    const notionPageId = notionResult.pageId;
+    const merchantUuid = notionResult.merchantUuid || null;
 
     // Step 7: Index in Vectorize (optional but valuable for search)
     await step.do('index-vectorize', async () => {
       logger.info('Indexing in Vectorize', { callId });
 
       const transcript = call.voicemail?.transcription;
-      await indexCall(call.call, transcript, analysis.summary, notionPageId, env, logger);
+      await indexCall(call.call, transcript, analysis.summary, notionPageId, merchantUuid, env, logger);
 
       logger.info('Indexed in Vectorize', { callId });
     });
@@ -266,7 +268,7 @@ export class MessageProcessingWorkflow {
     });
 
     // Step 4: Create/update Notion page
-    const notionPageId = await step.do('create-notion', async () => {
+    const notionResult = await step.do('create-notion', async () => {
       logger.info('Creating/updating Notion page for message', { messageId });
 
       const notionClient = new NotionClient(env, logger);
@@ -281,24 +283,34 @@ export class MessageProcessingWorkflow {
 
       const existingPageId = await notionClient.messagePageExists(messageId);
 
-      let pageId: string;
       if (existingPageId) {
-        await notionClient.updateMessagePage(existingPageId, pageData);
-        pageId = existingPageId;
-      } else {
-        pageId = await notionClient.createMessagePage(pageData);
+        const result = await notionClient.updateMessagePage(existingPageId, pageData);
+        logger.info('Notion page created/updated for message', {
+          messageId,
+          pageId: existingPageId,
+          merchantUuid: result.merchantUuid,
+        });
+        return { pageId: existingPageId, merchantUuid: result.merchantUuid };
       }
 
-      logger.info('Notion page created/updated for message', { messageId, pageId });
-      return pageId;
+      const result = await notionClient.createMessagePage(pageData);
+      logger.info('Notion page created/updated for message', {
+        messageId,
+        pageId: result.pageId,
+        merchantUuid: result.merchantUuid,
+      });
+      return { pageId: result.pageId, merchantUuid: result.merchantUuid };
     });
+
+    const notionPageId = notionResult.pageId;
+    const merchantUuid = notionResult.merchantUuid || null;
 
     // Step 5: Index in Vectorize
     await step.do('index-vectorize', async () => {
       logger.info('Indexing message in Vectorize', { messageId });
 
       const { indexMessage } = await import('../utils/vector-search');
-      await indexMessage(message, analysis.summary, notionPageId, env, logger);
+      await indexMessage(message, analysis.summary, notionPageId, merchantUuid, env, logger);
 
       logger.info('Message indexed in Vectorize', { messageId });
     });
@@ -310,6 +322,7 @@ export class MessageProcessingWorkflow {
       notionPageId,
       canvasId,
       sentiment: analysis.sentiment.label,
+      merchantUuid,
     };
   }
 }
