@@ -230,7 +230,7 @@ async function backfillCallsDatabase(
                 const completeData = await openPhoneClient.getCompleteCall(call.id);
 
                 // Get transcript if available
-                const transcript = completeData.voicemail?.transcription;
+                const transcript = completeData.voicemail?.transcription ?? undefined;
 
                 // AI Analysis (if enabled)
                 let aiAnalysis = null;
@@ -250,8 +250,8 @@ async function backfillCallsDatabase(
                     const audioData = await openPhoneClient.downloadAudioFile(completeData.recordings[0].url);
                     recordingUrl = await r2Client.uploadRecording(call.id, audioData, {
                       timestamp: call.createdAt,
-                      duration: completeData.recordings[0].duration,
-                      contentType: completeData.recordings[0].type,
+                      duration: completeData.recordings[0].duration ?? undefined,
+                      contentType: completeData.recordings[0].type ?? undefined,
                     });
                   } catch (error) {
                     logger.error('Failed to upload recording', { callId: call.id, error });
@@ -265,8 +265,8 @@ async function backfillCallsDatabase(
                     const audioData = await openPhoneClient.downloadAudioFile(completeData.voicemail.url);
                     voicemailUrl = await r2Client.uploadVoicemail(call.id, audioData, {
                       timestamp: call.createdAt,
-                      duration: completeData.voicemail.duration,
-                      transcription: completeData.voicemail.transcription,
+                      duration: completeData.voicemail.duration ?? undefined,
+                      transcription: completeData.voicemail.transcription ?? undefined,
                     });
                   } catch (error) {
                     logger.error('Failed to upload voicemail', { callId: call.id, error });

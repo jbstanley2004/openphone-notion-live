@@ -30,6 +30,7 @@ interface PhoneAgentState {
   canvasCache: Record<string, string>;
   totalCallsSynced: number;
   totalMessagesSynced: number;
+  callsProcessed: number;
   insights: Array<{
     callId: string;
     sentiment: string;
@@ -67,6 +68,7 @@ export class PhoneAgent {
       canvasCache: initialState?.canvasCache || {},
       totalCallsSynced: initialState?.totalCallsSynced || 0,
       totalMessagesSynced: initialState?.totalMessagesSynced || 0,
+      callsProcessed: initialState?.callsProcessed || 0,
       insights: initialState?.insights || [],
     };
   }
@@ -130,8 +132,8 @@ export class PhoneAgent {
           const audioData = await openPhoneClient.downloadAudioFile(completeData.recordings[0].url);
           recordingUrl = await r2Client.uploadRecording(call.id, audioData, {
             timestamp: call.createdAt,
-            duration: completeData.recordings[0].duration,
-            contentType: completeData.recordings[0].type,
+            duration: completeData.recordings[0].duration ?? undefined,
+            contentType: completeData.recordings[0].type ?? undefined,
           });
         } catch (error) {
           this.logger.error('Failed to upload recording', { callId: call.id, error });
@@ -145,8 +147,8 @@ export class PhoneAgent {
           const audioData = await openPhoneClient.downloadAudioFile(completeData.voicemail.url);
           voicemailUrl = await r2Client.uploadVoicemail(call.id, audioData, {
             timestamp: call.createdAt,
-            duration: completeData.voicemail.duration,
-            transcription: completeData.voicemail.transcription,
+            duration: completeData.voicemail.duration ?? undefined,
+            transcription: completeData.voicemail.transcription ?? undefined,
           });
         } catch (error) {
           this.logger.error('Failed to upload voicemail', { callId: call.id, error });
