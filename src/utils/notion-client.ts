@@ -28,6 +28,8 @@ import {
 } from '../types/notion';
 import { Logger } from './logger';
 
+const MY_PHONE_NUMBER = '+13365185544';
+
 export class NotionClient {
   private client: NotionFetchClient;
   private callsDatabaseId: string;
@@ -71,6 +73,134 @@ export class NotionClient {
     this.logger = logger;
   }
 
+  /**
+   * Retrieve a Notion page by ID
+   */
+  async getPage(pageId: string): Promise<any | null> {
+    try {
+      return await this.client.pages.retrieve({ page_id: pageId });
+    } catch (error) {
+      this.logger.error('Failed to retrieve Notion page', error);
+      return null;
+    }
+  }
+
+  /**
+   * Query a database with optional filters, sorts, and pagination
+   */
+  async queryDatabase(
+    databaseId: string,
+    options: { filter?: any; sorts?: any; pageSize?: number; startCursor?: string } = {}
+  ): Promise<any> {
+    try {
+      return await this.client.databases.query({
+        database_id: databaseId,
+        filter: options.filter,
+        sorts: options.sorts,
+        page_size: options.pageSize,
+        start_cursor: options.startCursor,
+      });
+    } catch (error) {
+      this.logger.error('Failed to query Notion database', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Resolve Canvas relation for a call
+   */
+  async resolveCanvasForCall(call: Call): Promise<string | null> {
+    const otherParticipants = call.participants.filter((participant) => {
+      const normalized = participant.replace(/\D/g, '');
+      const myNormalized = MY_PHONE_NUMBER.replace(/\D/g, '');
+      return normalized !== myNormalized;
+    });
+
+    this.logger.info('Resolving Canvas for call participants', {
+      callId: call.id,
+      direction: call.direction,
+      participants: otherParticipants,
+    });
+
+    for (const participant of otherParticipants) {
+      const found = await this.findCanvasByPhone(participant);
+      if (found) {
+        this.logger.info('Found Canvas for call participant', {
+          participant,
+          canvasId: found,
+          direction: call.direction,
+        });
+        return found;
+      }
+    }
+
+    this.logger.warn('No Canvas match found for call', {
+      callId: call.id,
+      participants: otherParticipants,
+    });
+    return null;
+  }
+
+  /**
+   * Resolve Canvas relation for a message
+   */
+  async resolveCanvasForMessage(message: Message): Promise<string | null> {
+    const phoneToLookup = message.direction === 'incoming'
+      ? message.from
+      : (message.to[0] || null);
+
+    if (!phoneToLookup) {
+      this.logger.warn('No phone number available to resolve message Canvas', {
+        messageId: message.id,
+        direction: message.direction,
+      });
+      return null;
+    }
+
+    const normalized = phoneToLookup.replace(/\D/g, '');
+    const myNormalized = MY_PHONE_NUMBER.replace(/\D/g, '');
+
+    if (normalized === myNormalized) {
+      this.logger.warn('Skipping Canvas lookup for own phone number', {
+        phoneNumber: phoneToLookup,
+      });
+      return null;
+    }
+
+    const canvasId = await this.findCanvasByPhone(phoneToLookup);
+    if (!canvasId) {
+      this.logger.warn('No Canvas match found for message phone number', {
+        phoneNumber: phoneToLookup,
+        direction: message.direction,
+      });
+    }
+
+    return canvasId;
+  }
+
+  /**
+   * Resolve Canvas relation for mail
+   */
+  async resolveCanvasForMail(mail: { direction?: string | null; from?: string | null; to?: string[] | null }): Promise<string | null> {
+    const emailToLookup = mail.direction === 'incoming'
+      ? mail.from
+      : (mail.to?.[0] ?? null);
+
+    if (!emailToLookup) {
+      this.logger.warn('No email address available to resolve mail Canvas');
+      return null;
+    }
+
+    const canvasId = await this.findCanvasByEmail(emailToLookup);
+    if (!canvasId) {
+      this.logger.warn('No Canvas match found for email address', {
+        email: emailToLookup,
+      });
+    }
+
+    return canvasId;
+  }
+
   // ========================================================================
   // Call Database Operations
   // ========================================================================
@@ -91,53 +221,7 @@ export class NotionClient {
 
     this.logger.info('Creating call page in Notion', { callId: call.id });
 
-    // Find Canvas relation by phone number based on call direction
-    // For incoming calls: link to the caller (person calling me)
-    // For outgoing calls: link to the recipient (merchant I'm calling)
-    let canvasId: string | null = null;
-
-    // Filter out my own phone number to avoid matching my own Canvas record
-    const MY_PHONE_NUMBER = '+13365185544';
-    const otherParticipants = call.participants.filter(p => {
-      const normalized = p.replace(/\D/g, '');
-      const myNormalized = MY_PHONE_NUMBER.replace(/\D/g, '');
-      return normalized !== myNormalized;
-    });
-
-    this.logger.info('Finding Canvas for participants', {
-      allParticipants: call.participants,
-      filteredParticipants: otherParticipants,
-      direction: call.direction,
-    });
-
-    if (call.direction === 'incoming') {
-      // For incoming calls, find the caller's number (excluding my number)
-      for (const participant of otherParticipants) {
-        const foundCanvas = await this.findCanvasByPhone(participant);
-        if (foundCanvas) {
-          canvasId = foundCanvas;
-          this.logger.info('Found Canvas for incoming call', { participant, canvasId });
-          break;
-        }
-      }
-    } else if (call.direction === 'outgoing') {
-      // For outgoing calls, find the recipient's (merchant's) number (excluding my number)
-      for (const participant of otherParticipants) {
-        const foundCanvas = await this.findCanvasByPhone(participant);
-        if (foundCanvas) {
-          canvasId = foundCanvas;
-          this.logger.info('Found Canvas for outgoing call', { participant, canvasId });
-          break;
-        }
-      }
-    }
-
-    if (!canvasId && otherParticipants.length > 0) {
-      this.logger.warn('No Canvas found for any participant', {
-        participants: otherParticipants,
-        direction: call.direction,
-      });
-    }
+    const canvasId = await this.resolveCanvasForCall(call);
 
     // Format transcript dialogue
     const transcriptText = transcript?.dialogue
@@ -324,33 +408,7 @@ export class NotionClient {
   async createMessagePage(message: Message): Promise<string> {
     this.logger.info('Creating message page in Notion', { messageId: message.id });
 
-    // Find Canvas relation by phone number
-    // For incoming messages, use the "from" number (sender)
-    // For outgoing messages, use the "to" number (recipient)
-    let canvasId: string | null = null;
-
-    const MY_PHONE_NUMBER = '+13365185544';
-    const phoneToLookup = message.direction === 'incoming'
-      ? message.from
-      : (message.to[0] || null);
-
-    // Safety check: ensure we're not looking up our own number
-    if (phoneToLookup) {
-      const normalized = phoneToLookup.replace(/\D/g, '');
-      const myNormalized = MY_PHONE_NUMBER.replace(/\D/g, '');
-
-      if (normalized !== myNormalized) {
-        this.logger.info('Looking up Canvas for message', {
-          direction: message.direction,
-          phoneNumber: phoneToLookup,
-        });
-        canvasId = await this.findCanvasByPhone(phoneToLookup);
-      } else {
-        this.logger.warn('Skipping Canvas lookup - phone number is my own', {
-          phoneNumber: phoneToLookup,
-        });
-      }
-    }
+    const canvasId = await this.resolveCanvasForMessage(message);
 
     const properties = {
       'Message ID': createTitle(message.id),
@@ -429,18 +487,11 @@ export class NotionClient {
   async createMailPage(mail: Mail): Promise<string> {
     this.logger.info('Creating mail page in Notion', { mailId: mail.id });
 
-    // Find Canvas relation by email address
-    // For incoming mail, use the "from" email
-    // For outgoing mail, use the first "to" email
-    let canvasId: string | null = null;
-
-    const emailToLookup = mail.direction === 'incoming'
-      ? mail.from
-      : (mail.to[0] || null);
-
-    if (emailToLookup) {
-      canvasId = await this.findCanvasByEmail(emailToLookup);
-    }
+    const canvasId = await this.resolveCanvasForMail({
+      direction: mail.direction,
+      from: mail.from,
+      to: mail.to,
+    });
 
     const properties = {
       'Subject': createTitle(mail.subject || '(No Subject)'),

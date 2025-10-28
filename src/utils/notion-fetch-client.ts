@@ -79,6 +79,10 @@ export class NotionFetchClient {
         properties: params.properties,
       });
     },
+
+    retrieve: async (params: { page_id: string }) => {
+      return this.request('GET', `/pages/${params.page_id}`);
+    },
   };
 
   // Databases API (now uses data sources in 2025-09-03)
@@ -87,13 +91,14 @@ export class NotionFetchClient {
       return this.request('GET', `/databases/${params.database_id}`);
     },
 
-    query: async (params: { database_id: string; filter?: any; sorts?: any; page_size?: number }) => {
+    query: async (params: { database_id: string; filter?: any; sorts?: any; page_size?: number; start_cursor?: string }) => {
       // Convert database_id to data_source_id and use data source API
       const dataSourceId = await this.getDataSourceId(params.database_id);
       const body: any = {};
       if (params.filter) body.filter = params.filter;
       if (params.sorts) body.sorts = params.sorts;
       if (params.page_size) body.page_size = params.page_size;
+      if (params.start_cursor) body.start_cursor = params.start_cursor;
       return this.request('POST', `/data_sources/${dataSourceId}/query`, body);
     },
   };

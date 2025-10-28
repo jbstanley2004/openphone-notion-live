@@ -19,6 +19,8 @@ import { analyzeCallWithAI, analyzeMessageWithAI } from './ai-processor';
 import { indexCall, indexMessage } from '../utils/vector-search';
 import { getCachedCanvas } from '../utils/smart-cache';
 import { getSyncState, markAsSynced, markAsFailed, sleep } from '../utils/helpers';
+import { syncCallToD1, syncMessageToD1, syncMailToD1, MailSyncInput } from '../utils/d1-ingestion';
+import { upsertMerchantFromCanvasPage } from '../utils/d1-merchants';
 
 interface BackfillStats {
   calls: { synced: number; failed: number; skipped: number };
@@ -126,10 +128,37 @@ async function backfillCanvasDatabase(env: Env, logger: Logger) {
   let skipped = 0;
 
   try {
-    // Query all Canvas pages to ensure they're indexed properly
-    // This creates a baseline for Canvas lookups
-    logger.info('Canvas database is source of truth - no backfill needed');
-    logger.info('Canvas records are used for relation matching');
+    let startCursor: string | undefined = undefined;
+
+    do {
+      const response = await notionClient.queryDatabase(env.NOTION_CANVAS_DATABASE_ID, {
+        pageSize: 50,
+        startCursor,
+      });
+
+      const pages = Array.isArray(response.results) ? response.results : [];
+
+      for (const page of pages) {
+        try {
+          await upsertMerchantFromCanvasPage(env, logger, page);
+          synced++;
+        } catch (error) {
+          failed++;
+          logger.error('Failed to upsert Canvas page into D1', {
+            canvasId: page?.id,
+            error,
+          });
+        }
+      }
+
+      startCursor = response.next_cursor ?? undefined;
+
+      if (!response.has_more) {
+        break;
+      }
+    } while (startCursor);
+
+    logger.info('Canvas backfill completed', { synced, failed, skipped });
 
     return { synced, failed, skipped };
   } catch (error) {
@@ -327,6 +356,19 @@ async function backfillCallsDatabase(
                   aiEnabled: includeAI,
                   vectorized: includeVectorize,
                 });
+
+                try {
+                  await syncCallToD1(completeData, env, notionClient, logger, {
+                    notionPageId,
+                    recordingUrl,
+                    voicemailUrl,
+                  });
+                } catch (error) {
+                  logger.error('Failed to sync call to D1 during backfill', {
+                    callId: call.id,
+                    error,
+                  });
+                }
               } catch (error) {
                 failed++;
                 logger.error('Failed to backfill call', { callId: call.id, error });
@@ -477,6 +519,17 @@ async function backfillMessagesDatabase(
 
                 await markAsSynced(env.SYNC_STATE, message.id, 'message', notionPageId);
                 synced++;
+
+                try {
+                  await syncMessageToD1(message, env, notionClient, logger, {
+                    notionPageId,
+                  });
+                } catch (error) {
+                  logger.error('Failed to sync message to D1 during backfill', {
+                    messageId: message.id,
+                    error,
+                  });
+                }
               } catch (error) {
                 failed++;
                 logger.error('Failed to backfill message', { messageId: message.id, error });
@@ -516,11 +569,133 @@ async function backfillMailDatabase(
 ) {
   logger.info('Backfilling Mail database', { daysBack });
 
-  // TODO: Implement based on your mail source
-  // This is a placeholder for mail synchronization
-  logger.info('Mail backfill not yet implemented - add your mail source integration here');
+  const notionClient = new NotionClient(env, logger);
+  let synced = 0;
+  let failed = 0;
+  let skipped = 0;
 
-  return { synced: 0, failed: 0, skipped: 0 };
+  try {
+    const cutoff = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
+    let startCursor: string | undefined = undefined;
+
+    do {
+      const response = await notionClient.queryDatabase(env.NOTION_MAIL_DATABASE_ID, {
+        pageSize: batchSize,
+        startCursor,
+        filter: {
+          property: 'Created At',
+          date: {
+            on_or_after: cutoff,
+          },
+        },
+      });
+
+      const pages = Array.isArray(response.results) ? response.results : [];
+
+      for (const page of pages) {
+        try {
+          const mailInput = mapMailPageToSyncInput(page);
+          await syncMailToD1(mailInput, env, notionClient, logger, {
+            notionPageId: page.id,
+          });
+          synced++;
+        } catch (error) {
+          failed++;
+          logger.error('Failed to sync mail page to D1', {
+            pageId: page?.id,
+            error,
+          });
+        }
+      }
+
+      startCursor = response.next_cursor ?? undefined;
+      if (!response.has_more) {
+        break;
+      }
+    } while (startCursor);
+
+    logger.info('Mail backfill completed', { synced, failed, skipped });
+    return { synced, failed, skipped };
+  } catch (error) {
+    logger.error('Mail backfill failed', error);
+    throw error;
+  }
+}
+
+function getPlainText(property: any): string | null {
+  if (!property) {
+    return null;
+  }
+
+  const segments = Array.isArray(property.rich_text)
+    ? property.rich_text
+    : Array.isArray(property.title)
+      ? property.title
+      : [];
+
+  if (!Array.isArray(segments)) {
+    return null;
+  }
+
+  const text = segments.map((segment: any) => segment.plain_text ?? '').join('').trim();
+  return text || null;
+}
+
+function mapMailPageToSyncInput(page: any): MailSyncInput {
+  const props = page.properties || {};
+  const subject = getPlainText(props.Subject) ?? '(No Subject)';
+  const body = getPlainText(props.Body) ?? '';
+  const from = props.From?.email ?? getPlainText(props.From) ?? undefined;
+  const toRaw = getPlainText(props.To) ?? '';
+  const toList = toRaw
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  const direction = props.Direction?.select?.name ?? undefined;
+  const status = props.Status?.select?.name ?? undefined;
+  const createdAt = props['Created At']?.date?.start ?? page.created_time;
+  const updatedAt = props['Updated At']?.date?.start ?? page.last_edited_time;
+  const relation = Array.isArray(props.Canvas?.relation) ? props.Canvas.relation : [];
+  let canvasId = relation.length > 0 ? relation[0].id : undefined;
+  const rawData = getPlainText(props['Raw Data']);
+  let metadata: Record<string, any> | undefined;
+  let mailId = page.id;
+  let threadId: string | undefined;
+
+  if (rawData) {
+    try {
+      const parsed = JSON.parse(rawData);
+      metadata = parsed;
+      if (typeof parsed?.id === 'string') {
+        mailId = parsed.id;
+      }
+      if (typeof parsed?.threadId === 'string') {
+        threadId = parsed.threadId;
+      } else if (parsed?.conversationId !== undefined) {
+        threadId = String(parsed.conversationId);
+      }
+      if (!canvasId && typeof parsed?.canvasId === 'string') {
+        canvasId = parsed.canvasId;
+      }
+    } catch (error) {
+      metadata = undefined;
+    }
+  }
+
+  return {
+    id: mailId,
+    subject,
+    body,
+    from,
+    to: toList.length > 0 ? toList : undefined,
+    direction,
+    status,
+    createdAt,
+    updatedAt,
+    threadId,
+    metadata,
+    canvasId,
+  };
 }
 
 /**

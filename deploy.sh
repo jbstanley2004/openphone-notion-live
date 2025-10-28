@@ -1,5 +1,19 @@
 #!/bin/bash
 
+echo "Applying D1 migrations..."
+
+for migration in $(ls migrations/*.sql | sort); do
+  echo "  • Running $migration"
+  npx wrangler d1 execute openphone-sync-db --file="$migration" >/tmp/d1-migration.log 2>&1
+  if grep -qi "error" /tmp/d1-migration.log; then
+    echo "    ⚠️  Warning executing $migration"
+    cat /tmp/d1-migration.log
+  else
+    echo "    ✅ Migration applied"
+  fi
+done
+
+echo ""
 echo "Checking/creating Vectorize index..."
 
 # Try to create the Vectorize index - if it exists, this will fail but that's OK
