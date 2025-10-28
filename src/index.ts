@@ -17,6 +17,9 @@ import { isEventProcessed, markEventProcessed } from './utils/helpers';
 // Export Durable Object
 export { PhoneNumberSync } from './durable-objects/phone-number-sync';
 
+// Export Workflow
+export { CallProcessingWorkflow } from './workflows/call-processing';
+
 export default {
   /**
    * Handle incoming HTTP requests (webhook receiver)

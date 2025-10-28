@@ -42,7 +42,7 @@ export async function indexCall(
     // Generate embeddings using Workers AI
     const embeddings = await env.AI.run('@cf/baai/bge-base-en-v1.5', {
       text: [searchableText],
-    });
+    }) as { data: number[][] };
 
     if (!embeddings?.data?.[0]) {
       logger.warn('No embeddings generated for call', { callId: call.id });
@@ -88,7 +88,7 @@ export async function indexMessage(
 
     const embeddings = await env.AI.run('@cf/baai/bge-base-en-v1.5', {
       text: [searchableText],
-    });
+    }) as { data: number[][] };
 
     if (!embeddings?.data?.[0]) {
       logger.warn('No embeddings generated for message', { messageId: message.id });
@@ -139,7 +139,7 @@ export async function semanticSearch(
     // Generate query embeddings
     const embeddings = await env.AI.run('@cf/baai/bge-base-en-v1.5', {
       text: [query],
-    });
+    }) as { data: number[][] };
 
     if (!embeddings?.data?.[0]) {
       logger.warn('No embeddings generated for query', { query });
@@ -167,7 +167,8 @@ export async function semanticSearch(
     let filteredResults = results.matches || [];
     if (options.dateFrom || options.dateTo) {
       filteredResults = filteredResults.filter((match) => {
-        const timestamp = new Date(match.metadata.timestamp).getTime();
+        if (!match.metadata?.timestamp) return false;
+        const timestamp = new Date(match.metadata.timestamp as string).getTime();
         if (options.dateFrom && timestamp < new Date(options.dateFrom).getTime()) {
           return false;
         }
@@ -275,7 +276,7 @@ export async function findCanvasBySemantic(
     // Generate embeddings for the call context
     const embeddings = await env.AI.run('@cf/baai/bge-base-en-v1.5', {
       text: [callContext],
-    });
+    }) as { data: number[][] };
 
     if (!embeddings?.data?.[0]) {
       return null;
@@ -290,7 +291,7 @@ export async function findCanvasBySemantic(
 
     // Find the most common Canvas ID from similar calls
     const canvasIds = (results.matches || [])
-      .map((match) => match.metadata.notionPageId)
+      .map((match) => match.metadata?.notionPageId as string)
       .filter((id) => id);
 
     if (canvasIds.length === 0) {
@@ -354,8 +355,8 @@ function buildMessageSearchText(message: Message, summary: string | undefined): 
     parts.push(summary);
   }
 
-  if (message.body) {
-    parts.push(message.body);
+  if (message.text) {
+    parts.push(message.text);
   }
 
   return parts.join('\n').slice(0, 8000);

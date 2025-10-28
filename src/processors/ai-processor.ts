@@ -105,7 +105,7 @@ export async function analyzeMessageWithAI(
   const startTime = Date.now();
 
   try {
-    const context = message.body || '';
+    const context = message.text || '';
 
     const [sentiment, summary, actionItems] = await Promise.all([
       analyzeSentiment(context, env),
@@ -134,7 +134,7 @@ export async function analyzeMessageWithAI(
 
     return {
       sentiment: { label: 'neutral', score: 0.5 },
-      summary: message.body || '',
+      summary: message.text || '',
       actionItems: [],
       category: 'general',
     };
@@ -169,14 +169,14 @@ async function analyzeSentiment(
   try {
     const response = await env.AI.run('@cf/huggingface/distilbert-sst-2-int8', {
       text: text.slice(0, 512), // Model has max token limit
-    });
+    }) as { label?: string; score?: number }[] | { label?: string; score?: number };
 
     // Response format: [{ label: 'POSITIVE' | 'NEGATIVE', score: number }]
     const result = Array.isArray(response) ? response[0] : response;
 
     return {
-      label: result.label.toLowerCase(),
-      score: result.score,
+      label: (result?.label || 'neutral').toLowerCase(),
+      score: result?.score || 0.5,
     };
   } catch (error) {
     return { label: 'neutral', score: 0.5 };

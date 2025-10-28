@@ -63,8 +63,8 @@ export class CallProcessingWorkflow {
 
       logger.info('Call data fetched', {
         callId,
-        direction: completeData.direction,
-        duration: completeData.duration,
+        direction: completeData.call.direction,
+        duration: completeData.call.duration,
       });
 
       return completeData;
@@ -85,7 +85,7 @@ export class CallProcessingWorkflow {
 
       const audioData = await openPhoneClient.downloadAudioFile(call.recordings[0].url);
       const url = await r2Client.uploadRecording(callId, audioData, {
-        timestamp: call.createdAt,
+        timestamp: call.call.createdAt,
         duration: call.recordings[0].duration,
         contentType: call.recordings[0].type,
       });
@@ -109,7 +109,7 @@ export class CallProcessingWorkflow {
 
       const audioData = await openPhoneClient.downloadAudioFile(call.voicemail.url);
       const url = await r2Client.uploadVoicemail(callId, audioData, {
-        timestamp: call.createdAt,
+        timestamp: call.call.createdAt,
         duration: call.voicemail.duration,
         transcription: call.voicemail.transcription,
       });
@@ -123,7 +123,7 @@ export class CallProcessingWorkflow {
       logger.info('Running AI analysis', { callId });
 
       const transcript = call.voicemail?.transcription;
-      const aiAnalysis = await analyzeCallWithAI(call, transcript, env, logger);
+      const aiAnalysis = await analyzeCallWithAI(call.call, transcript, env, logger);
 
       logger.info('AI analysis completed', {
         callId,
@@ -143,7 +143,7 @@ export class CallProcessingWorkflow {
       const notionClient = new NotionClient(env, logger);
 
       // Try each participant
-      for (const participant of call.participants) {
+      for (const participant of call.call.participants) {
         const id = await notionClient.findCanvasByPhone(participant);
         if (id) {
           logger.info('Canvas found', { callId, participant, canvasId: id });
@@ -193,7 +193,7 @@ export class CallProcessingWorkflow {
       logger.info('Indexing in Vectorize', { callId });
 
       const transcript = call.voicemail?.transcription;
-      await indexCall(call, transcript, analysis.summary, notionPageId, env, logger);
+      await indexCall(call.call, transcript, analysis.summary, notionPageId, env, logger);
 
       logger.info('Indexed in Vectorize', { callId });
     });
