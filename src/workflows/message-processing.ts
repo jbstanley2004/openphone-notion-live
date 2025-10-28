@@ -10,7 +10,7 @@ import {
 } from './modules/merchant';
 import { publishMerchantInteraction } from './modules/merchant-interaction';
 import { createRunStep } from './modules/step-runner';
-import { createOpenPhoneResources, createNotionClient } from './modules/resources';
+import { createOpenPhoneResources, createNotionResources } from './modules/resources';
 import type { WorkflowEvent, WorkflowStep } from './types';
 
 interface MessageWorkflowEvent extends WorkflowEvent<{
@@ -33,7 +33,7 @@ export class MessageProcessingWorkflow {
     const runStep = createRunStep(logger, workflowName, workflowContext, step);
 
     const { client: openPhoneClient } = createOpenPhoneResources(env, logger);
-    const notionClient = createNotionClient(env, logger);
+    const { client: notionClient, getCachedCanvas } = createNotionResources(env, logger);
 
     try {
       const message = await runStep('fetch-message', async () => {
@@ -53,7 +53,8 @@ export class MessageProcessingWorkflow {
           message.from,
           env,
           logger,
-          notionClient
+          notionClient,
+          getCachedCanvas
         );
         return withMerchantUuid(context);
       });

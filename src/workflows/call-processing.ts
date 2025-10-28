@@ -10,7 +10,7 @@ import {
 } from './modules/merchant';
 import { publishMerchantInteraction } from './modules/merchant-interaction';
 import { createRunStep } from './modules/step-runner';
-import { createOpenPhoneResources, createNotionClient, createR2Client } from './modules/resources';
+import { createOpenPhoneResources, createNotionResources, createR2Client } from './modules/resources';
 import { storeCallRecording, storeCallVoicemail } from './modules/call';
 import type { WorkflowEvent, WorkflowStep } from './types';
 
@@ -34,7 +34,7 @@ export class CallProcessingWorkflow {
     const runStep = createRunStep(logger, workflowName, workflowContext, step);
 
     const { client: openPhoneClient } = createOpenPhoneResources(env, logger);
-    const notionClient = createNotionClient(env, logger);
+    const { client: notionClient, getCachedCanvas } = createNotionResources(env, logger);
     const r2Client = createR2Client(env, logger);
 
     try {
@@ -90,7 +90,8 @@ export class CallProcessingWorkflow {
           callData.call.participants,
           env,
           logger,
-          notionClient
+          notionClient,
+          getCachedCanvas
         );
         return withMerchantUuid(context);
       });
