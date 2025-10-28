@@ -10,7 +10,7 @@ import {
 } from './modules/merchant';
 import { publishMerchantInteraction } from './modules/merchant-interaction';
 import { createRunStep } from './modules/step-runner';
-import { createNotionClient } from './modules/resources';
+import { createNotionResources } from './modules/resources';
 import type { WorkflowEvent, WorkflowStep } from './types';
 
 interface MailWorkflowEvent extends WorkflowEvent<{
@@ -31,7 +31,7 @@ export class MailProcessingWorkflow {
 
     const runStep = createRunStep(logger, workflowName, workflowContext, step);
 
-    const notionClient = createNotionClient(env, logger);
+    const { client: notionClient, getCachedCanvas } = createNotionResources(env, logger);
 
     try {
       const normalizedMail = await runStep('normalize-mail', async () => {
@@ -60,7 +60,8 @@ export class MailProcessingWorkflow {
           },
           env,
           logger,
-          notionClient
+          notionClient,
+          getCachedCanvas
         );
         return withMerchantUuid(context);
       });
