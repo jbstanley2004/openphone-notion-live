@@ -204,7 +204,7 @@ async function generateSummary(text: string, env: Env): Promise<string> {
  */
 async function extractActionItems(text: string, env: Env): Promise<string[]> {
   try {
-    const response = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
+    const response = await env.AI.run('@cf/openai/gpt-oss-120b', {
       messages: [
         {
           role: 'system',
@@ -239,7 +239,7 @@ async function extractActionItems(text: string, env: Env): Promise<string[]> {
  */
 async function categorizeCall(context: string, env: Env): Promise<string> {
   try {
-    const response = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
+    const response = await env.AI.run('@cf/openai/gpt-oss-120b', {
       messages: [
         {
           role: 'system',
@@ -268,7 +268,7 @@ async function categorizeCall(context: string, env: Env): Promise<string> {
  */
 async function categorizeMessage(text: string, env: Env): Promise<string> {
   try {
-    const response = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
+    const response = await env.AI.run('@cf/openai/gpt-oss-120b', {
       messages: [
         {
           role: 'system',
