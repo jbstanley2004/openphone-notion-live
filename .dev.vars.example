@@ -14,6 +14,10 @@ NOTION_MESSAGES_DATABASE_ID=fd2b189cdfc44f46813d4035960e7e15
 NOTION_CANVAS_DATABASE_ID=fc0e485b6570460e995b94431b08f0a7
 NOTION_MAIL_DATABASE_ID=20af9371362f8031b737fda7c8c9797d
 
+# Recording delivery configuration
+RECORDINGS_PUBLIC_BASE_URL=https://pub-358b252982f749d78ef2628cb2b3450b.r2.dev
+SELF_PHONE_NUMBERS=["+13365195544"]
+
 # Optional Configuration
 WEBHOOK_SECRET=optional_webhook_signature_secret
 ALERT_WEBHOOK_URL=optional_slack_or_discord_webhook_url

@@ -336,15 +336,20 @@ Edit `wrangler.jsonc` to customize:
     "OPENPHONE_API_BASE": "https://api.openphone.com/v1",
     "LOG_LEVEL": "info",  // debug, info, warn, error
     "WEBHOOK_PATH": "/webhooks/openphone",
-    "SELF_PHONE_NUMBERS": "[]"  // optional: JSON array or comma/newline separated list of your own numbers
+    "SELF_PHONE_NUMBERS": "[\"+13365195544\"]",  // internal number for +1 (336) 519-5544
+    "RECORDINGS_PUBLIC_BASE_URL": "https://pub-358b252982f749d78ef2628cb2b3450b.r2.dev"  // public recordings origin
   }
 }
 ```
 
+If your R2 bucket is not fronted by a public domain, omit `RECORDINGS_PUBLIC_BASE_URL` and the worker will fall back to
+Workers Signed URLs (requires R2 support for `createSignedUrl`).
+
 #### Configuring `SELF_PHONE_NUMBERS`
 
 Provide the OpenPhone numbers that belong to your organization so the sync can ignore them when
-resolving Canvas relations. Accepted formats:
+resolving Canvas relations. For this deployment, configure `SELF_PHONE_NUMBERS` with `+1 (336) 519-5544`
+as shown above. Accepted formats:
 
 - JSON array string: `"[\"+14155551212\", \"+14155550000\"]"`
 - Comma-separated string: `"+14155551212, +14155550000"`

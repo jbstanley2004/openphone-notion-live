@@ -18,7 +18,8 @@
     "OPENPHONE_API_BASE": "https://api.openphone.com/v1",
     "LOG_LEVEL": "info",
     "WEBHOOK_PATH": "/webhooks/openphone",
-    "SELF_PHONE_NUMBERS": "[]" // Optional: JSON array or comma-separated list of internal numbers
+    "SELF_PHONE_NUMBERS": "[\"+13365195544\"]", // Internal OpenPhone number for +1 (336) 519-5544
+    "RECORDINGS_PUBLIC_BASE_URL": "https://pub-358b252982f749d78ef2628cb2b3450b.r2.dev" // Public R2 domain for recordings
   },
 
   // R2 bucket for storing call recordings

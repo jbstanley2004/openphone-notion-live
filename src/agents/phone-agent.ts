@@ -108,7 +108,11 @@ export class PhoneAgent {
       const rateLimiter = new RateLimiter(this.env.RATE_LIMITS, this.logger);
       const openPhoneClient = new OpenPhoneClient(this.env, this.logger, rateLimiter);
       const notionClient = new NotionClient(this.env, this.logger);
-      const r2Client = new R2Client(this.env.RECORDINGS_BUCKET, this.logger);
+      const r2Client = new R2Client(
+        this.env.RECORDINGS_BUCKET,
+        this.logger,
+        this.env.RECORDINGS_PUBLIC_BASE_URL
+      );
 
       // Fetch complete call data
       const completeData = await openPhoneClient.getCompleteCall(call.id);

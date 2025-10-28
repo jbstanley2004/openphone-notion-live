@@ -196,7 +196,7 @@ async function backfillCallsDatabase(
   const rateLimiter = new RateLimiter(env.RATE_LIMITS, logger);
   const openPhoneClient = new OpenPhoneClient(env, logger, rateLimiter);
   const notionClient = new NotionClient(env, logger);
-  const r2Client = new R2Client(env.RECORDINGS_BUCKET, logger);
+  const r2Client = new R2Client(env.RECORDINGS_BUCKET, logger, env.RECORDINGS_PUBLIC_BASE_URL);
 
   let synced = 0;
   let failed = 0;
