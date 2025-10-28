@@ -14,7 +14,7 @@
 // This is the target architecture based on Cloudflare's documentation
 
 import type { Env } from '../types/env';
-import type { Call } from '../types/openphone';
+import type { OpenPhoneID } from '../types/openphone';
 import { OpenPhoneClient } from '../utils/openphone-client';
 import { NotionClient } from '../utils/notion-client';
 import { R2Client } from '../utils/r2-client';
@@ -25,7 +25,7 @@ import { indexCall } from '../utils/vector-search';
 
 interface WorkflowEvent {
   params: {
-    callId: string;
+    callId: OpenPhoneID<'AC'>;
     phoneNumberId: string;
   };
 }
@@ -50,173 +50,217 @@ export class CallProcessingWorkflow {
     const logger = createLogger(env);
     const { callId, phoneNumberId } = event.params;
 
-    logger.info('Starting call processing workflow', { callId, phoneNumberId });
+    const workflowName = 'call-processing';
+    const workflowContext = { callId, phoneNumberId };
 
-    // Step 1: Fetch call data (retriable independently)
-    const call = await step.do('fetch-call', async () => {
-      logger.info('Fetching call data', { callId });
+    logger.info('Starting call processing workflow', workflowContext);
 
-      const rateLimiter = new RateLimiter(env.RATE_LIMITS, logger);
-      const openPhoneClient = new OpenPhoneClient(env, logger, rateLimiter);
-
-      const completeData = await openPhoneClient.getCompleteCall(callId);
-
-      logger.info('Call data fetched', {
-        callId,
-        direction: completeData.call.direction,
-        duration: completeData.call.duration,
+    const runStep = async <T>(stepName: string, fn: () => Promise<T>): Promise<T> => {
+      const stepStart = Date.now();
+      logger.info('Workflow step started', {
+        workflow: workflowName,
+        step: stepName,
+        ...workflowContext,
       });
 
-      return completeData;
-    });
-
-    // Step 2: Store recording (can retry independently if upload fails)
-    const recordingUrl = await step.do('store-recording', async () => {
-      if (!call.recordings?.[0]?.url || call.recordings[0].status !== 'completed') {
-        logger.info('No recording to store', { callId });
-        return undefined;
+      try {
+        const result = await step.do(stepName, async () => fn());
+        logger.info('Workflow step completed', {
+          workflow: workflowName,
+          step: stepName,
+          durationMs: Date.now() - stepStart,
+          ...workflowContext,
+        });
+        return result;
+      } catch (error) {
+        logger.error('Workflow step failed', error);
+        throw error;
       }
-
-      logger.info('Storing recording', { callId });
-
-      const rateLimiter = new RateLimiter(env.RATE_LIMITS, logger);
-      const openPhoneClient = new OpenPhoneClient(env, logger, rateLimiter);
-      const r2Client = new R2Client(env.RECORDINGS_BUCKET, logger);
-
-      const audioData = await openPhoneClient.downloadAudioFile(call.recordings[0].url);
-      const url = await r2Client.uploadRecording(callId, audioData, {
-        timestamp: call.call.createdAt,
-        duration: call.recordings[0].duration,
-        contentType: call.recordings[0].type,
-      });
-
-      logger.info('Recording stored', { callId, url });
-      return url;
-    });
-
-    // Step 3: Store voicemail (independent from recording)
-    const voicemailUrl = await step.do('store-voicemail', async () => {
-      if (!call.voicemail?.url) {
-        logger.info('No voicemail to store', { callId });
-        return undefined;
-      }
-
-      logger.info('Storing voicemail', { callId });
-
-      const rateLimiter = new RateLimiter(env.RATE_LIMITS, logger);
-      const openPhoneClient = new OpenPhoneClient(env, logger, rateLimiter);
-      const r2Client = new R2Client(env.RECORDINGS_BUCKET, logger);
-
-      const audioData = await openPhoneClient.downloadAudioFile(call.voicemail.url);
-      const url = await r2Client.uploadVoicemail(callId, audioData, {
-        timestamp: call.call.createdAt,
-        duration: call.voicemail.duration,
-        transcription: call.voicemail.transcription,
-      });
-
-      logger.info('Voicemail stored', { callId, url });
-      return url;
-    });
-
-    // Step 4: AI analysis (expensive operation, retry separately)
-    const analysis = await step.do('ai-analysis', async () => {
-      logger.info('Running AI analysis', { callId });
-
-      const transcript = call.voicemail?.transcription;
-      const aiAnalysis = await analyzeCallWithAI(call.call, transcript, env, logger);
-
-      logger.info('AI analysis completed', {
-        callId,
-        sentiment: aiAnalysis.sentiment.label,
-        actionItemCount: aiAnalysis.actionItems.length,
-        category: aiAnalysis.category,
-        leadScore: aiAnalysis.leadScore,
-      });
-
-      return aiAnalysis;
-    });
-
-    // Step 5: Find Canvas relation
-    const canvasId = await step.do('find-canvas', async () => {
-      logger.info('Finding Canvas relation', { callId });
-
-      const notionClient = new NotionClient(env, logger);
-
-      // Try each participant
-      for (const participant of call.call.participants) {
-        const id = await notionClient.findCanvasByPhone(participant);
-        if (id) {
-          logger.info('Canvas found', { callId, participant, canvasId: id });
-          return id;
-        }
-      }
-
-      logger.info('No Canvas found', { callId });
-      return null;
-    });
-
-    // Step 6: Create/update Notion page (final step)
-    const notionResult = await step.do('create-notion', async () => {
-      logger.info('Creating/updating Notion page', { callId });
-
-      const notionClient = new NotionClient(env, logger);
-
-      const pageData = {
-        ...call,
-        recordingUrl,
-        voicemailUrl,
-        // Add AI-generated fields
-        aiSentiment: analysis.sentiment.label,
-        aiSummary: analysis.summary,
-        aiActionItems: analysis.actionItems,
-        aiCategory: analysis.category,
-        aiLeadScore: analysis.leadScore,
-        aiKeywords: analysis.keywords,
-      };
-
-      const existingPageId = await notionClient.callPageExists(callId);
-
-      if (existingPageId) {
-        const result = await notionClient.updateCallPage(existingPageId, pageData);
-        logger.info('Notion page created/updated', { callId, pageId: existingPageId, merchantUuid: result.merchantUuid });
-        return { pageId: existingPageId, merchantUuid: result.merchantUuid };
-      }
-
-      const result = await notionClient.createCallPage(pageData);
-      logger.info('Notion page created/updated', { callId, pageId: result.pageId, merchantUuid: result.merchantUuid });
-      return { pageId: result.pageId, merchantUuid: result.merchantUuid };
-    });
-
-    const notionPageId = notionResult.pageId;
-    const merchantUuid = notionResult.merchantUuid || null;
-
-    // Step 7: Index in Vectorize (optional but valuable for search)
-    await step.do('index-vectorize', async () => {
-      logger.info('Indexing in Vectorize', { callId });
-
-      const transcript = call.voicemail?.transcription;
-      await indexCall(call.call, transcript, analysis.summary, notionPageId, merchantUuid, env, logger);
-
-      logger.info('Indexed in Vectorize', { callId });
-    });
-
-    // Workflow complete!
-    logger.info('Call processing workflow completed', {
-      callId,
-      notionPageId,
-      canvasId,
-      sentiment: analysis.sentiment.label,
-      leadScore: analysis.leadScore,
-    });
-
-    return {
-      callId,
-      notionPageId,
-      canvasId,
-      sentiment: analysis.sentiment.label,
-      leadScore: analysis.leadScore,
-      actionItems: analysis.actionItems,
     };
+
+    try {
+      const call = await runStep('fetch-call', async () => {
+        logger.info('Fetching call data', { callId });
+
+        const rateLimiter = new RateLimiter(env.RATE_LIMITS, logger);
+        const openPhoneClient = new OpenPhoneClient(env, logger, rateLimiter);
+
+        const completeData = await openPhoneClient.getCompleteCall(callId);
+
+        logger.info('Call data fetched', {
+          callId,
+          direction: completeData.call.direction,
+          duration: completeData.call.duration,
+        });
+
+        return completeData;
+      });
+
+      const recordingUrl = await runStep('store-recording', async () => {
+        const recording = call.recordings?.[0];
+        if (!recording?.url || recording.status !== 'completed') {
+          logger.info('No recording to store', { callId });
+          return undefined;
+        }
+
+        logger.info('Storing recording', { callId });
+
+        const rateLimiter = new RateLimiter(env.RATE_LIMITS, logger);
+        const openPhoneClient = new OpenPhoneClient(env, logger, rateLimiter);
+        const r2Client = new R2Client(env.RECORDINGS_BUCKET, logger);
+
+        const audioData = await openPhoneClient.downloadAudioFile(recording.url);
+        const url = await r2Client.uploadRecording(callId, audioData, {
+          timestamp: call.call.createdAt,
+          duration: recording.duration ?? undefined,
+          contentType: recording.type ?? undefined,
+        });
+
+        logger.info('Recording stored', { callId, url });
+        return url;
+      });
+
+      const voicemailUrl = await runStep('store-voicemail', async () => {
+        const voicemail = call.voicemail;
+        if (!voicemail?.url) {
+          logger.info('No voicemail to store', { callId });
+          return undefined;
+        }
+
+        logger.info('Storing voicemail', { callId });
+
+        const rateLimiter = new RateLimiter(env.RATE_LIMITS, logger);
+        const openPhoneClient = new OpenPhoneClient(env, logger, rateLimiter);
+        const r2Client = new R2Client(env.RECORDINGS_BUCKET, logger);
+
+        const audioData = await openPhoneClient.downloadAudioFile(voicemail.url);
+        const url = await r2Client.uploadVoicemail(callId, audioData, {
+          timestamp: call.call.createdAt,
+          duration: voicemail.duration ?? undefined,
+          transcription: voicemail.transcription ?? undefined,
+        });
+
+        logger.info('Voicemail stored', { callId, url });
+        return url;
+      });
+
+      const analysis = await runStep('ai-analysis', async () => {
+        logger.info('Running AI analysis', { callId });
+
+        const transcript = call.voicemail?.transcription ?? undefined;
+        const aiAnalysis = await analyzeCallWithAI(call.call, transcript, env, logger);
+
+        logger.info('AI analysis completed', {
+          callId,
+          sentiment: aiAnalysis.sentiment.label,
+          actionItemCount: aiAnalysis.actionItems.length,
+          category: aiAnalysis.category,
+          leadScore: aiAnalysis.leadScore,
+        });
+
+        return aiAnalysis;
+      });
+
+      const canvasId = await runStep('find-canvas', async () => {
+        logger.info('Finding Canvas relation', { callId });
+
+        const notionClient = new NotionClient(env, logger);
+
+        for (const participant of call.call.participants) {
+          const id = await notionClient.findCanvasByPhone(participant);
+          if (id) {
+            logger.info('Canvas found', { callId, participant, canvasId: id });
+            return id;
+          }
+        }
+
+        logger.info('No Canvas found', { callId });
+        return null;
+      });
+
+      const notionResult = await runStep('create-notion', async () => {
+        logger.info('Creating/updating Notion page', { callId });
+
+        const notionClient = new NotionClient(env, logger);
+
+        const pageData = {
+          ...call,
+          recordingUrl,
+          voicemailUrl,
+          aiSentiment: analysis.sentiment.label,
+          aiSummary: analysis.summary,
+          aiActionItems: analysis.actionItems,
+          aiCategory: analysis.category,
+          aiLeadScore: analysis.leadScore,
+          aiKeywords: analysis.keywords,
+        };
+
+        const existingPageId = await notionClient.callPageExists(callId);
+
+        if (existingPageId) {
+          const result = await notionClient.updateCallPage(existingPageId, pageData);
+          const resolvedCanvasId = result.canvasId ?? canvasId ?? null;
+          logger.info('Notion page created/updated', {
+            callId,
+            pageId: existingPageId,
+            canvasId: resolvedCanvasId,
+            merchantUuid: result.merchantUuid ?? null,
+          });
+          return {
+            pageId: existingPageId,
+            merchantUuid: result.merchantUuid ?? null,
+            canvasId: resolvedCanvasId,
+          };
+        }
+
+        const result = await notionClient.createCallPage(pageData);
+        const resolvedCanvasId = result.canvasId ?? canvasId ?? null;
+        logger.info('Notion page created/updated', {
+          callId,
+          pageId: result.pageId,
+          canvasId: resolvedCanvasId,
+          merchantUuid: result.merchantUuid ?? null,
+        });
+        return {
+          pageId: result.pageId,
+          merchantUuid: result.merchantUuid ?? null,
+          canvasId: resolvedCanvasId,
+        };
+      });
+
+      const notionPageId = notionResult.pageId;
+      const merchantUuid = notionResult.merchantUuid;
+      const finalCanvasId = notionResult.canvasId ?? canvasId;
+
+      await runStep('index-vectorize', async () => {
+        logger.info('Indexing in Vectorize', { callId });
+
+        const transcript = call.voicemail?.transcription ?? undefined;
+        await indexCall(call.call, transcript, analysis.summary, notionPageId, merchantUuid, env, logger);
+
+        logger.info('Indexed in Vectorize', { callId });
+      });
+
+      logger.info('Call processing workflow completed', {
+        callId,
+        notionPageId,
+        canvasId: finalCanvasId,
+        sentiment: analysis.sentiment.label,
+        leadScore: analysis.leadScore,
+      });
+      return {
+        callId,
+        notionPageId,
+        canvasId: finalCanvasId,
+        sentiment: analysis.sentiment.label,
+        leadScore: analysis.leadScore,
+        actionItems: analysis.actionItems,
+        merchantUuid,
+      };
+    } catch (error) {
+      logger.error('Call processing workflow failed', error);
+      throw error;
+    }
   }
 }
 
@@ -230,100 +274,142 @@ export class MessageProcessingWorkflow {
     const logger = createLogger(env);
     const { messageId } = event.params as any;
 
-    logger.info('Starting message processing workflow', { messageId });
+    const workflowName = 'message-processing';
+    const workflowContext = { messageId };
 
-    // Step 1: Fetch message data
-    const message = await step.do('fetch-message', async () => {
-      logger.info('Fetching message data', { messageId });
+    logger.info('Starting message processing workflow', workflowContext);
 
-      const rateLimiter = new RateLimiter(env.RATE_LIMITS, logger);
-      const openPhoneClient = new OpenPhoneClient(env, logger, rateLimiter);
-
-      const messageData = await openPhoneClient.getMessage(messageId);
-
-      logger.info('Message data fetched', { messageId });
-      return messageData;
-    });
-
-    // Step 2: AI analysis
-    const analysis = await step.do('ai-analysis', async () => {
-      logger.info('Running AI analysis on message', { messageId });
-
-      const { analyzeMessageWithAI } = await import('../processors/ai-processor');
-      const aiAnalysis = await analyzeMessageWithAI(message, env, logger);
-
-      logger.info('Message AI analysis completed', {
-        messageId,
-        sentiment: aiAnalysis.sentiment.label,
-        category: aiAnalysis.category,
+    const runStep = async <T>(stepName: string, fn: () => Promise<T>): Promise<T> => {
+      const stepStart = Date.now();
+      logger.info('Workflow step started', {
+        workflow: workflowName,
+        step: stepName,
+        ...workflowContext,
       });
 
-      return aiAnalysis;
-    });
+      try {
+        const result = await step.do(stepName, async () => fn());
+        logger.info('Workflow step completed', {
+          workflow: workflowName,
+          step: stepName,
+          durationMs: Date.now() - stepStart,
+          ...workflowContext,
+        });
+        return result;
+      } catch (error) {
+        logger.error('Workflow step failed', error);
+        throw error;
+      }
+    };
 
-    // Step 3: Find Canvas relation
-    const canvasId = await step.do('find-canvas', async () => {
-      const notionClient = new NotionClient(env, logger);
-      return await notionClient.findCanvasByPhone(message.from);
-    });
+    try {
+      const message = await runStep('fetch-message', async () => {
+        logger.info('Fetching message data', { messageId });
 
-    // Step 4: Create/update Notion page
-    const notionResult = await step.do('create-notion', async () => {
-      logger.info('Creating/updating Notion page for message', { messageId });
+        const rateLimiter = new RateLimiter(env.RATE_LIMITS, logger);
+        const openPhoneClient = new OpenPhoneClient(env, logger, rateLimiter);
 
-      const notionClient = new NotionClient(env, logger);
+        const messageData = await openPhoneClient.getMessage(messageId);
 
-      const pageData = {
-        ...message,
-        aiSentiment: analysis.sentiment.label,
-        aiSummary: analysis.summary,
-        aiCategory: analysis.category,
-        aiActionItems: analysis.actionItems,
-      };
+        logger.info('Message data fetched', { messageId });
+        return messageData;
+      });
 
-      const existingPageId = await notionClient.messagePageExists(messageId);
+      const analysis = await runStep('ai-analysis', async () => {
+        logger.info('Running AI analysis on message', { messageId });
 
-      if (existingPageId) {
-        const result = await notionClient.updateMessagePage(existingPageId, pageData);
+        const { analyzeMessageWithAI } = await import('../processors/ai-processor');
+        const aiAnalysis = await analyzeMessageWithAI(message, env, logger);
+
+        logger.info('Message AI analysis completed', {
+          messageId,
+          sentiment: aiAnalysis.sentiment.label,
+          category: aiAnalysis.category,
+        });
+
+        return aiAnalysis;
+      });
+
+      const canvasId = await runStep('find-canvas', async () => {
+        const notionClient = new NotionClient(env, logger);
+        return await notionClient.findCanvasByPhone(message.from);
+      });
+
+      const notionResult = await runStep('create-notion', async () => {
+        logger.info('Creating/updating Notion page for message', { messageId });
+
+        const notionClient = new NotionClient(env, logger);
+
+        const pageData = {
+          ...message,
+          aiSentiment: analysis.sentiment.label,
+          aiSummary: analysis.summary,
+          aiCategory: analysis.category,
+          aiActionItems: analysis.actionItems,
+        };
+
+        const existingPageId = await notionClient.messagePageExists(messageId);
+
+        if (existingPageId) {
+          const result = await notionClient.updateMessagePage(existingPageId, pageData);
+          const resolvedCanvasId = result.canvasId ?? canvasId ?? null;
+          logger.info('Notion page created/updated for message', {
+            messageId,
+            pageId: existingPageId,
+            canvasId: resolvedCanvasId,
+            merchantUuid: result.merchantUuid ?? null,
+          });
+          return {
+            pageId: existingPageId,
+            merchantUuid: result.merchantUuid ?? null,
+            canvasId: resolvedCanvasId,
+          };
+        }
+
+        const result = await notionClient.createMessagePage(pageData);
+        const resolvedCanvasId = result.canvasId ?? canvasId ?? null;
         logger.info('Notion page created/updated for message', {
           messageId,
-          pageId: existingPageId,
-          merchantUuid: result.merchantUuid,
+          pageId: result.pageId,
+          canvasId: resolvedCanvasId,
+          merchantUuid: result.merchantUuid ?? null,
         });
-        return { pageId: existingPageId, merchantUuid: result.merchantUuid };
-      }
-
-      const result = await notionClient.createMessagePage(pageData);
-      logger.info('Notion page created/updated for message', {
-        messageId,
-        pageId: result.pageId,
-        merchantUuid: result.merchantUuid,
+        return {
+          pageId: result.pageId,
+          merchantUuid: result.merchantUuid ?? null,
+          canvasId: resolvedCanvasId,
+        };
       });
-      return { pageId: result.pageId, merchantUuid: result.merchantUuid };
-    });
 
-    const notionPageId = notionResult.pageId;
-    const merchantUuid = notionResult.merchantUuid || null;
+      const notionPageId = notionResult.pageId;
+      const merchantUuid = notionResult.merchantUuid;
+      const finalCanvasId = notionResult.canvasId ?? canvasId;
 
-    // Step 5: Index in Vectorize
-    await step.do('index-vectorize', async () => {
-      logger.info('Indexing message in Vectorize', { messageId });
+      await runStep('index-vectorize', async () => {
+        logger.info('Indexing message in Vectorize', { messageId });
 
-      const { indexMessage } = await import('../utils/vector-search');
-      await indexMessage(message, analysis.summary, notionPageId, merchantUuid, env, logger);
+        const { indexMessage } = await import('../utils/vector-search');
+        await indexMessage(message, analysis.summary, notionPageId, merchantUuid, env, logger);
 
-      logger.info('Message indexed in Vectorize', { messageId });
-    });
+        logger.info('Message indexed in Vectorize', { messageId });
+      });
 
-    logger.info('Message processing workflow completed', { messageId, notionPageId });
-
-    return {
-      messageId,
-      notionPageId,
-      canvasId,
-      sentiment: analysis.sentiment.label,
-      merchantUuid,
-    };
+      logger.info('Message processing workflow completed', {
+        messageId,
+        notionPageId,
+        canvasId: finalCanvasId,
+      });
+      return {
+        messageId,
+        notionPageId,
+        canvasId: finalCanvasId,
+        sentiment: analysis.sentiment.label,
+        merchantUuid,
+      };
+    } catch (error) {
+      logger.error('Message processing workflow failed', error);
+      throw error;
+    }
   }
 }
 
