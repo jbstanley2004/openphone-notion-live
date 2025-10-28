@@ -8,6 +8,7 @@ import { Logger } from '../utils/logger';
 import { runComprehensiveBackfill } from './comprehensive-backfill';
 import { replicateCanvasCacheToKV } from './canvas-cache-replicator';
 import { runAggregationJobs } from '../workflows/aggregation-jobs';
+import { runSystemHealthChecks } from './system-health';
 
 /**
  * Run all scheduled tasks
@@ -53,4 +54,15 @@ export async function runScheduledTasks(env: Env, logger: Logger): Promise<void>
   }
 
   await runAggregationJobs(env, logger);
+
+  const healthTimer = logger.startTimer('system.health');
+  try {
+    const summary = await runSystemHealthChecks(env, logger);
+    healthTimer('success', {
+      degradedChecks: summary.checks.filter((check) => check.status !== 'ok').length,
+    });
+  } catch (error) {
+    healthTimer('error', {}, error);
+    logger.error('System health checks failed', error);
+  }
 }

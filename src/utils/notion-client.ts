@@ -87,6 +87,10 @@ export class NotionClient {
     return this.messagesDatabaseId;
   }
 
+  getCanvasDatabaseId(): string {
+    return this.canvasDatabaseId;
+  }
+
   getMailDatabaseId(): string {
     return this.mailDatabaseId;
   }
