@@ -89,6 +89,93 @@ export class NotionClient {
     }
   }
 
+  private normalizeIdentifier(value: unknown): string | null {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const normalized = this.normalizeIdentifier(item);
+        if (normalized) {
+          return normalized;
+        }
+      }
+      return null;
+    }
+
+    if (value === undefined || value === null) {
+      return null;
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    }
+
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+
+    return null;
+  }
+
+  private extractMailConversationId(mail: Mail): string | null {
+    const metadata = (mail.metadata ?? {}) as any;
+    const candidates: unknown[] = [
+      mail.threadId,
+      metadata?.threadId,
+      metadata?.thread_id,
+      metadata?.conversationId,
+      metadata?.conversation_id,
+      metadata?.conversation?.id,
+      metadata?.conversation?.conversationId,
+      metadata?.conversation?.threadId,
+    ];
+
+    for (const candidate of candidates) {
+      const normalized = this.normalizeIdentifier(candidate);
+      if (normalized) {
+        return normalized;
+      }
+    }
+
+    return null;
+  }
+
+  private extractMailMimeMessageId(mail: Mail): string | null {
+    const metadata = (mail.metadata ?? {}) as any;
+    const candidates: unknown[] = [
+      metadata?.mimeMessageId,
+      metadata?.mime_message_id,
+      metadata?.messageId,
+      metadata?.message_id,
+      metadata?.gmailMessageId,
+      metadata?.gmail_message_id,
+    ];
+
+    for (const candidate of candidates) {
+      const normalized = this.normalizeIdentifier(candidate);
+      if (normalized) {
+        return normalized;
+      }
+    }
+
+    const headers = metadata?.headers;
+    if (headers && typeof headers === 'object') {
+      const headerCandidates: unknown[] = [
+        headers['Message-ID'],
+        headers['Message-Id'],
+        headers['message-id'],
+      ];
+
+      for (const candidate of headerCandidates) {
+        const normalized = this.normalizeIdentifier(candidate);
+        if (normalized) {
+          return normalized;
+        }
+      }
+    }
+
+    return null;
+  }
+
   getCallsDatabaseId(): string {
     return this.callsDatabaseId;
   }
@@ -549,13 +636,19 @@ export class NotionClient {
       to: mail.to,
     });
 
+    const conversationId = this.extractMailConversationId(mail);
+    const mimeMessageId = this.extractMailMimeMessageId(mail);
+
     const properties = {
       'Subject': createTitle(mail.subject || '(No Subject)'),
+      'Message ID': createRichText(mail.id),
       'From': createEmail(mail.from),
       'To': createRichText(mail.to.join(', ')),
       'CC': createRichText(mail.cc?.join(', ') || ''),
       'BCC': createRichText(mail.bcc?.join(', ') || ''),
       'Body': createRichText(mail.body),
+      'Conversation ID': createRichText(conversationId ?? ''),
+      'MIME Message ID': createRichText(mimeMessageId ?? ''),
       'Direction': createSelect(mail.direction),
       'Status': createSelect(mail.status),
       'Created At': createDate(mail.createdAt),
@@ -595,10 +688,16 @@ export class NotionClient {
   async updateMailPage(pageId: string, mail: Mail): Promise<void> {
     this.logger.info('Updating mail page in Notion', { mailId: mail.id, pageId });
 
+    const conversationId = this.extractMailConversationId(mail);
+    const mimeMessageId = this.extractMailMimeMessageId(mail);
+
     const properties = {
       'Status': createSelect(mail.status),
       'Updated At': createDate(mail.updatedAt),
       'Body': createRichText(mail.body),
+      'Message ID': createRichText(mail.id),
+      'Conversation ID': createRichText(conversationId ?? ''),
+      'MIME Message ID': createRichText(mimeMessageId ?? ''),
     };
 
     try {
@@ -624,17 +723,25 @@ export class NotionClient {
   async findPageByResourceId(
     databaseId: string,
     resourceId: string,
-    titleProperty: string = 'Call ID'
+    titleProperty: string = 'Call ID',
+    propertyType: 'title' | 'rich_text' = 'title'
   ): Promise<string | null> {
     try {
+      const filter: any = { property: titleProperty };
+
+      if (propertyType === 'rich_text') {
+        filter.rich_text = {
+          equals: resourceId,
+        };
+      } else {
+        filter.title = {
+          equals: resourceId,
+        };
+      }
+
       const response = await this.client.databases.query({
         database_id: databaseId,
-        filter: {
-          property: titleProperty,
-          title: {
-            equals: resourceId,
-          },
-        },
+        filter,
       });
 
       if (response.results.length > 0) {
@@ -666,7 +773,7 @@ export class NotionClient {
    * Check if a mail page exists
    */
   async mailPageExists(mailId: string): Promise<string | null> {
-    return this.findPageByResourceId(this.mailDatabaseId, mailId, 'Subject');
+    return this.findPageByResourceId(this.mailDatabaseId, mailId, 'Message ID', 'rich_text');
   }
 
   // ========================================================================
