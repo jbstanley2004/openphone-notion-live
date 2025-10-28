@@ -24,6 +24,14 @@ import {
   type MailThreadRow,
 } from '../utils/d1-merchants';
 
+interface MerchantSearchResult {
+  canvasId: string;
+  relevance: number;
+  preview: string;
+  merchantUuid?: string;
+  merchantName?: string;
+}
+
 export interface MerchantData {
   canvasId: string;
   canvas: any; // Canvas Notion page
@@ -229,52 +237,87 @@ export async function searchMerchants(
   },
   env: Env,
   logger: Logger
-): Promise<{ canvasId: string; relevance: number; preview: string }[]> {
+): Promise<MerchantSearchResult[]> {
   logger.info('Searching merchants', { query });
 
   try {
     const d1Results = await searchMerchantsInD1(env, query, options.topK || 10);
     if (d1Results.length > 0) {
       logger.info('Merchants found via D1 search', { count: d1Results.length });
-      return d1Results.map((result) => ({
-        canvasId: result.canvasId,
-        relevance: result.score,
-        preview: result.preview || 'Cached interaction',
-      }));
+      const enriched = await Promise.all(
+        d1Results.map(async (result) => {
+          const merchant = await getMerchantRow(env, result.canvasId);
+          return {
+            canvasId: result.canvasId,
+            relevance: result.score,
+            preview: result.preview || 'Cached interaction',
+            merchantUuid: merchant?.merchant_uuid ?? result.canvasId,
+            merchantName: merchant?.name ?? undefined,
+          } satisfies MerchantSearchResult;
+        })
+      );
+
+      return enriched;
     }
 
     // Use semantic search to find relevant interactions
     const results = await semanticSearch(query, options, env, logger);
 
-    // Group by Canvas ID and aggregate relevance scores
-    const canvasMap = new Map<string, { relevance: number; preview: string }>();
+    const merchantMap = new Map<string, {
+      canvasId?: string;
+      merchantUuid?: string;
+      merchantName?: string;
+      relevance: number;
+      preview: string;
+      lastTimestamp: number;
+    }>();
 
     for (const result of results) {
-      if (!result.metadata.notionPageId) continue;
+      const metadata = result.metadata;
+      const canvasId = metadata.canvasId ?? undefined;
+      const merchantUuid = metadata.merchantUuid ?? canvasId;
 
-      // Get Canvas ID from the page
-      // TODO: This would need to query Notion to get the Canvas relation
-      // For now, use a placeholder
-      const canvasId = 'placeholder';
+      if (!canvasId && !merchantUuid) {
+        continue;
+      }
 
-      const existing = canvasMap.get(canvasId);
+      const key = merchantUuid ?? canvasId!;
+      const timestampValue = metadata.timestamp ? Date.parse(metadata.timestamp) : 0;
+      const preview = `Match in ${metadata.type} (${metadata.direction ?? 'unknown'}) at ${metadata.timestamp}`;
+
+      const existing = merchantMap.get(key);
       if (existing) {
         existing.relevance = Math.max(existing.relevance, result.score);
+        if (!existing.canvasId && canvasId) {
+          existing.canvasId = canvasId;
+        }
+        if (!existing.merchantName && metadata.merchantName) {
+          existing.merchantName = metadata.merchantName;
+        }
+        if (timestampValue > existing.lastTimestamp) {
+          existing.lastTimestamp = timestampValue;
+          existing.preview = preview;
+        }
       } else {
-        canvasMap.set(canvasId, {
+        merchantMap.set(key, {
+          canvasId,
+          merchantUuid: merchantUuid ?? undefined,
+          merchantName: metadata.merchantName ?? undefined,
           relevance: result.score,
-          preview: `Match in ${result.metadata.type} from ${result.metadata.timestamp}`,
+          preview,
+          lastTimestamp: timestampValue,
         });
       }
     }
 
-    // Convert to array and sort by relevance
-    const merchants = Array.from(canvasMap.entries())
-      .map(([canvasId, data]) => ({
-        canvasId,
-        relevance: data.relevance,
-        preview: data.preview,
-      }))
+    const merchants = Array.from(merchantMap.values())
+      .map((entry) => ({
+        canvasId: entry.canvasId ?? entry.merchantUuid ?? 'unknown',
+        relevance: entry.relevance,
+        preview: entry.preview,
+        merchantUuid: entry.merchantUuid ?? entry.canvasId,
+        merchantName: entry.merchantName,
+      }) as MerchantSearchResult)
       .sort((a, b) => b.relevance - a.relevance)
       .slice(0, options.topK || 10);
 

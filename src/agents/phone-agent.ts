@@ -21,6 +21,7 @@ import { RateLimiter } from '../utils/rate-limiter';
 import { createLogger } from '../utils/logger';
 import { analyzeCallWithAI } from '../processors/ai-processor';
 import { indexCall, findSimilarCalls } from '../utils/vector-search';
+import { resolveMerchantMetadata } from '../utils/merchant-metadata';
 
 interface PhoneAgentState {
   phoneNumberId: string;
@@ -30,6 +31,7 @@ interface PhoneAgentState {
   canvasCache: Record<string, string>;
   totalCallsSynced: number;
   totalMessagesSynced: number;
+  callsProcessed?: number;
   insights: Array<{
     callId: string;
     sentiment: string;
@@ -122,6 +124,12 @@ export class PhoneAgent {
 
       // Intelligent Canvas matching with confidence scoring
       const canvasId = await this.findBestCanvas(call, aiAnalysis);
+      const merchantMetadata = canvasId
+        ? await resolveMerchantMetadata(this.env, this.logger, {
+            canvasId,
+            notionClient,
+          })
+        : { canvasId: null, merchantUuid: null, merchantName: null };
 
       // Handle recordings
       let recordingUrl: string | undefined;
@@ -130,8 +138,8 @@ export class PhoneAgent {
           const audioData = await openPhoneClient.downloadAudioFile(completeData.recordings[0].url);
           recordingUrl = await r2Client.uploadRecording(call.id, audioData, {
             timestamp: call.createdAt,
-            duration: completeData.recordings[0].duration,
-            contentType: completeData.recordings[0].type,
+            duration: completeData.recordings[0].duration ?? undefined,
+            contentType: completeData.recordings[0].type ?? undefined,
           });
         } catch (error) {
           this.logger.error('Failed to upload recording', { callId: call.id, error });
@@ -145,8 +153,8 @@ export class PhoneAgent {
           const audioData = await openPhoneClient.downloadAudioFile(completeData.voicemail.url);
           voicemailUrl = await r2Client.uploadVoicemail(call.id, audioData, {
             timestamp: call.createdAt,
-            duration: completeData.voicemail.duration,
-            transcription: completeData.voicemail.transcription,
+            duration: completeData.voicemail.duration ?? undefined,
+            transcription: completeData.voicemail.transcription ?? undefined,
           });
         } catch (error) {
           this.logger.error('Failed to upload voicemail', { callId: call.id, error });
@@ -178,7 +186,11 @@ export class PhoneAgent {
       }
 
       // Index in Vectorize for semantic search
-      await indexCall(call, transcript, aiAnalysis.summary, notionPageId, this.env, this.logger);
+      await indexCall(call, transcript, aiAnalysis.summary, notionPageId, this.env, this.logger, {
+        canvasId: merchantMetadata.canvasId ?? undefined,
+        merchantUuid: merchantMetadata.merchantUuid ?? undefined,
+        merchantName: merchantMetadata.merchantName ?? undefined,
+      });
 
       // Find similar calls (duplicate lead detection)
       const similarCalls = await findSimilarCalls(call.id, 3, this.env, this.logger);
@@ -213,7 +225,7 @@ export class PhoneAgent {
       this.logger.info('Call processed successfully with AI', {
         callId: call.id,
         notionPageId,
-        canvasId,
+        canvasId: merchantMetadata.canvasId,
         sentiment: aiAnalysis.sentiment.label,
         leadScore: aiAnalysis.leadScore,
         durationMs: duration,

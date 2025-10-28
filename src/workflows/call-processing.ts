@@ -22,6 +22,7 @@ import { RateLimiter } from '../utils/rate-limiter';
 import { createLogger } from '../utils/logger';
 import { analyzeCallWithAI } from '../processors/ai-processor';
 import { indexCall } from '../utils/vector-search';
+import { resolveMerchantMetadata } from '../utils/merchant-metadata';
 
 interface WorkflowEvent {
   params: {
@@ -161,7 +162,7 @@ export class CallProcessingWorkflow {
         return aiAnalysis;
       });
 
-      const canvasId = await runStep('find-canvas', async () => {
+      const merchantContext = await runStep('find-canvas', async () => {
         logger.info('Finding Canvas relation', { callId });
 
         const notionClient = new NotionClient(env, logger);
@@ -170,12 +171,16 @@ export class CallProcessingWorkflow {
           const id = await notionClient.findCanvasByPhone(participant);
           if (id) {
             logger.info('Canvas found', { callId, participant, canvasId: id });
-            return id;
+            const metadata = await resolveMerchantMetadata(env, logger, {
+              canvasId: id,
+              notionClient,
+            });
+            return metadata;
           }
         }
 
         logger.info('No Canvas found', { callId });
-        return null;
+        return { canvasId: null, merchantUuid: null, merchantName: null };
       });
 
       const notionPageId = await runStep('create-notion', async () => {
@@ -213,7 +218,11 @@ export class CallProcessingWorkflow {
         logger.info('Indexing in Vectorize', { callId });
 
         const transcript = call.voicemail?.transcription ?? undefined;
-        await indexCall(call.call, transcript, analysis.summary, notionPageId, env, logger);
+        await indexCall(call.call, transcript, analysis.summary, notionPageId, env, logger, {
+          canvasId: merchantContext.canvasId ?? undefined,
+          merchantUuid: merchantContext.merchantUuid ?? undefined,
+          merchantName: merchantContext.merchantName ?? undefined,
+        });
 
         logger.info('Indexed in Vectorize', { callId });
       });
@@ -221,21 +230,21 @@ export class CallProcessingWorkflow {
       logger.info('Call processing workflow completed', {
         callId,
         notionPageId,
-        canvasId,
+        canvasId: merchantContext.canvasId,
         sentiment: analysis.sentiment.label,
         leadScore: analysis.leadScore,
       });
       logger.logWorkflowStep(workflowName, 'workflow', 'success', {
         ...workflowContext,
         notionPageId,
-        canvasId,
+        canvasId: merchantContext.canvasId,
       });
-      finishWorkflow('success', { notionPageId, canvasId });
+      finishWorkflow('success', { notionPageId, canvasId: merchantContext.canvasId });
 
       return {
         callId,
         notionPageId,
-        canvasId,
+        canvasId: merchantContext.canvasId,
         sentiment: analysis.sentiment.label,
         leadScore: analysis.leadScore,
         actionItems: analysis.actionItems,
@@ -314,9 +323,18 @@ export class MessageProcessingWorkflow {
         return aiAnalysis;
       });
 
-      const canvasId = await runStep('find-canvas', async () => {
+      const merchantContext = await runStep('find-canvas', async () => {
         const notionClient = new NotionClient(env, logger);
-        return await notionClient.findCanvasByPhone(message.from);
+        const id = await notionClient.findCanvasByPhone(message.from);
+        if (!id) {
+          return { canvasId: null, merchantUuid: null, merchantName: null };
+        }
+
+        const metadata = await resolveMerchantMetadata(env, logger, {
+          canvasId: id,
+          notionClient,
+        });
+        return metadata;
       });
 
       const notionPageId = await runStep('create-notion', async () => {
@@ -350,7 +368,11 @@ export class MessageProcessingWorkflow {
         logger.info('Indexing message in Vectorize', { messageId });
 
         const { indexMessage } = await import('../utils/vector-search');
-        await indexMessage(message, analysis.summary, notionPageId, env, logger);
+        await indexMessage(message, analysis.summary, notionPageId, env, logger, {
+          canvasId: merchantContext.canvasId ?? undefined,
+          merchantUuid: merchantContext.merchantUuid ?? undefined,
+          merchantName: merchantContext.merchantName ?? undefined,
+        });
 
         logger.info('Message indexed in Vectorize', { messageId });
       });
@@ -365,7 +387,7 @@ export class MessageProcessingWorkflow {
       return {
         messageId,
         notionPageId,
-        canvasId,
+        canvasId: merchantContext.canvasId,
         sentiment: analysis.sentiment.label,
       };
     } catch (error) {
