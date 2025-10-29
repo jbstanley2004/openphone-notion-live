@@ -658,6 +658,8 @@ function calculateStats(
     (a, b) => b[1] - a[1]
   );
 
+  const sentimentEntries = Object.entries(sentimentCounts) as Array<[string, number]>;
+  const avgSentiment = sentimentEntries.sort((a, b) => b[1] - a[1])[0]?.[0] || 'neutral';
   const avgSentiment = sortedSentiments[0]?.[0] || 'neutral';
 
   // Calculate average lead score

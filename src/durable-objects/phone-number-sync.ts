@@ -50,12 +50,35 @@ const DO_MAIL_EVENTS = new Set<WebhookEvent['type']>([
   'mail.sent',
 ]);
 
+type CanvasLookupType = 'phone' | 'email';
+
+const normalizeCanvasLookup = (lookup: string, type: CanvasLookupType): string => {
+  if (!lookup) {
+    return '';
+  }
+
+  if (type === 'phone') {
+    return lookup.replace(/\D/g, '');
+  }
+
+  return lookup.trim().toLowerCase();
+};
+
+const buildCanvasCacheKey = (normalizedLookup: string, type: CanvasLookupType): string => {
+  return `${type}:${normalizedLookup}`;
+};
+
+interface CanvasCacheEntry {
+  canvasId: string | null;
+  merchantUuid: string | null;
+}
+
 interface PhoneNumberState {
   phoneNumberId: string;
   phoneNumber: string;
   lastCallSync: number;      // Unix timestamp in ms
   lastMessageSync: number;   // Unix timestamp in ms
-  canvasCache: Record<string, string>; // phone/email -> canvas ID
+  canvasCache: Record<string, CanvasCacheEntry>; // phone/email -> canvas metadata
   totalCallsSynced: number;
   totalMessagesSynced: number;
 }
@@ -97,6 +120,37 @@ export class PhoneNumberSync {
     const stored = await this.ctx.storage.get<PhoneNumberState>('state');
 
     if (stored) {
+      const normalizedCache: Record<string, CanvasCacheEntry> = {};
+      for (const [rawKey, rawValue] of Object.entries(stored.canvasCache || {})) {
+        const [maybeType, originalLookup = ''] = rawKey.split(':', 2);
+        const lookupType: CanvasLookupType = maybeType === 'email' ? 'email' : 'phone';
+        const normalizedLookup = normalizeCanvasLookup(originalLookup, lookupType);
+
+        if (!normalizedLookup) {
+          continue;
+        }
+
+        const cacheKey = buildCanvasCacheKey(normalizedLookup, lookupType);
+        const entry: CanvasCacheEntry = typeof rawValue === 'string'
+          ? { canvasId: rawValue, merchantUuid: null }
+          : {
+              canvasId:
+                rawValue && typeof rawValue === 'object' && 'canvasId' in rawValue
+                  ? (rawValue as any).canvasId ?? null
+                  : null,
+              merchantUuid:
+                rawValue && typeof rawValue === 'object' && 'merchantUuid' in rawValue
+                  ? (rawValue as any).merchantUuid ?? null
+                  : null,
+            };
+
+        normalizedCache[cacheKey] = entry;
+      }
+
+      this.state = {
+        ...stored,
+        canvasCache: normalizedCache,
+      };
       // Normalize existing cache keys to the new format (type:normalizedLookup)
       const normalizedCache: Record<string, string> = {};
       for (const [key, value] of Object.entries(stored.canvasCache || {})) {
@@ -159,6 +213,44 @@ export class PhoneNumberSync {
   /**
    * Get Canvas ID from cache or fetch
    */
+  private async getCanvasId(
+    lookup: string,
+    type: CanvasLookupType,
+    notionClient: NotionClient
+  ): Promise<CanvasCacheEntry | null> {
+    if (!this.state) return null;
+
+    const normalizedLookup = normalizeCanvasLookup(lookup, type);
+
+    if (!normalizedLookup) {
+      this.logger.warn('Canvas lookup missing normalized value', { lookup, type });
+      return null;
+    }
+
+    // Check in-memory cache first
+    const cacheKey = buildCanvasCacheKey(normalizedLookup, type);
+    if (this.state.canvasCache[cacheKey]) {
+      const cachedEntry = this.state.canvasCache[cacheKey];
+
+      if (!cachedEntry.merchantUuid && cachedEntry.canvasId) {
+        const info = await notionClient.getCanvasMerchantInfo(cachedEntry.canvasId);
+        if (info.uuid) {
+          cachedEntry.merchantUuid = info.uuid;
+          this.state.canvasCache[cacheKey] = cachedEntry;
+          await this.saveState();
+        }
+      }
+
+      this.logger.info('Canvas cache hit', {
+        lookup,
+        normalizedLookup,
+        type,
+        canvasId: cachedEntry.canvasId,
+        merchantUuid: cachedEntry.merchantUuid,
+      });
+
+      // Update D1 cache stats (async, don't wait)
+      this.ctx.waitUntil(this.updateCanvasCacheHit(normalizedLookup, type));
   private async getCanvasId(lookup: string, type: CanvasLookupType, notionClient: NotionClient): Promise<string | null> {
     if (!this.state) return null;
 
@@ -218,10 +310,11 @@ export class PhoneNumberSync {
         })
       );
 
-      return this.state.canvasCache[cacheKey];
+      return cachedEntry;
     }
 
     // Cache miss - query Notion
+    this.logger.info('Canvas cache miss, querying Notion', { lookup, normalizedLookup, type });
     this.logger.info('Canvas cache miss, querying Notion', { lookup: normalizedLookup, type });
     const startTime = Date.now();
 
@@ -235,12 +328,26 @@ export class PhoneNumberSync {
     const duration = Date.now() - startTime;
 
     if (canvasId) {
+      const merchantInfo = await notionClient.getCanvasMerchantInfo(canvasId);
+      const cacheEntry: CanvasCacheEntry = {
+        canvasId,
+        merchantUuid: merchantInfo.uuid,
+      };
+
+      // Cache the result
+      this.state.canvasCache[cacheKey] = cacheEntry;
       // Cache the result in DO state
       this.state.canvasCache[cacheKey] = canvasId;
       await this.saveState();
 
       // Log to D1 (async)
       this.ctx.waitUntil(
+        this.logCanvasCache(normalizedLookup, type, cacheEntry, { source: 'notion' })
+      );
+      this.ctx.waitUntil(
+        this.logPerformanceMetric('canvas_lookup', type, duration, true)
+      );
+      return cacheEntry;
         this.logCanvasCache(normalizedLookup, type, canvasId, {
           source: 'notion',
         })
@@ -248,9 +355,11 @@ export class PhoneNumberSync {
     }
 
     // Log performance metric
-    this.ctx.waitUntil(this.logPerformanceMetric('canvas_lookup', type, duration, !!canvasId));
+    this.ctx.waitUntil(
+      this.logPerformanceMetric('canvas_lookup', type, duration, false)
+    );
 
-    return canvasId;
+    return null;
   }
 
   /**
@@ -343,13 +452,19 @@ export class PhoneNumberSync {
       const completeData = await openPhoneClient.getCompleteCall(call.id);
 
       // Get Canvas relation using cached lookup
-      let canvasId: string | null = null;
+      let canvasInfo: CanvasCacheEntry | null = null;
       if (call.direction === 'incoming' || call.direction === 'outgoing') {
         for (const participant of call.participants) {
-          canvasId = await this.getCanvasId(participant, 'phone', notionClient);
-          if (canvasId) break;
+          const lookupResult = await this.getCanvasId(participant, 'phone', notionClient);
+          if (lookupResult?.canvasId) {
+            canvasInfo = lookupResult;
+            break;
+          }
         }
       }
+
+      const canvasId = canvasInfo?.canvasId || null;
+      const merchantUuidFromCache = canvasInfo?.merchantUuid || null;
 
       // Handle recordings/voicemails (same as before)
       let recordingUrl: string | undefined;
@@ -386,44 +501,63 @@ export class PhoneNumberSync {
       let notionPageId: string;
 
       if (existingPageId) {
-        await notionClient.updateCallPage(existingPageId, { ...completeData, recordingUrl, voicemailUrl });
+        const result = await notionClient.updateCallPage(existingPageId, { ...completeData, recordingUrl, voicemailUrl });
         notionPageId = existingPageId;
+        canvasInfo = {
+          canvasId: canvasInfo?.canvasId ?? result.canvasId ?? null,
+          merchantUuid: canvasInfo?.merchantUuid ?? result.merchantUuid ?? merchantUuidFromCache ?? null,
+        };
       } else {
-        notionPageId = await notionClient.createCallPage({ ...completeData, recordingUrl, voicemailUrl });
+        const result = await notionClient.createCallPage({ ...completeData, recordingUrl, voicemailUrl });
+        notionPageId = result.pageId;
+        canvasInfo = {
+          canvasId: canvasInfo?.canvasId ?? result.canvasId ?? null,
+          merchantUuid: canvasInfo?.merchantUuid ?? result.merchantUuid ?? merchantUuidFromCache ?? null,
+        };
       }
+
+      const merchantUuid = canvasInfo?.merchantUuid ?? merchantUuidFromCache ?? null;
 
       const duration = Date.now() - startTime;
 
       // Log to D1 (async)
-      this.ctx.waitUntil(this.logSyncHistory({
-        phone_number_id: this.state!.phoneNumberId,
-        resource_type: 'call',
-        resource_id: call.id,
-        direction: call.direction,
-        notion_page_id: notionPageId,
-        canvas_id: canvasId,
-        sync_status: 'success',
-        processing_time_ms: duration,
-        synced_at: Date.now(),
-      }));
+        this.ctx.waitUntil(this.logSyncHistory({
+          phone_number_id: this.state!.phoneNumberId,
+          resource_type: 'call',
+          resource_id: call.id,
+          direction: call.direction,
+          notion_page_id: notionPageId,
+          canvas_id: canvasInfo?.canvasId || null,
+          merchant_uuid: merchantUuid,
+          sync_status: 'success',
+          processing_time_ms: duration,
+          synced_at: Date.now(),
+        }));
 
-      this.logger.info('Call processed successfully', { callId: call.id, notionPageId, canvasId, durationMs: duration });
+      this.logger.info('Call processed successfully', {
+        callId: call.id,
+        notionPageId,
+        canvasId: canvasInfo?.canvasId || null,
+        merchantUuid,
+        durationMs: duration,
+      });
     } catch (error) {
       const duration = Date.now() - startTime;
 
       // Log failure to D1
-      this.ctx.waitUntil(this.logSyncHistory({
-        phone_number_id: this.state!.phoneNumberId,
-        resource_type: 'call',
-        resource_id: call.id,
-        direction: call.direction,
-        notion_page_id: null,
-        canvas_id: null,
-        sync_status: 'failed',
-        error_message: String(error),
-        processing_time_ms: duration,
-        synced_at: Date.now(),
-      }));
+        this.ctx.waitUntil(this.logSyncHistory({
+          phone_number_id: this.state!.phoneNumberId,
+          resource_type: 'call',
+          resource_id: call.id,
+          direction: call.direction,
+          notion_page_id: null,
+          canvas_id: null,
+          merchant_uuid: null,
+          sync_status: 'failed',
+          error_message: String(error),
+          processing_time_ms: duration,
+          synced_at: Date.now(),
+        }));
 
       throw error;
     }
@@ -523,6 +657,30 @@ export class PhoneNumberSync {
   private async logCanvasCache(
     normalizedLookup: string,
     type: CanvasLookupType,
+    entry: CanvasCacheEntry,
+    metadata: { source: string; canvasName?: string } = { source: 'notion' }
+  ): Promise<void> {
+    const now = Date.now();
+    await this.logToD1('canvas_cache', {
+      lookup_key: normalizedLookup,
+      lookup_type: type,
+      canvas_id: entry.canvasId,
+      canvas_name: metadata.canvasName ?? null,
+      merchant_uuid: entry.merchantUuid,
+      cached_at: now,
+      hit_count: 1,
+      last_used_at: now,
+    });
+    this.logger.info('Canvas cache entry stored', {
+      lookup: normalizedLookup,
+      type,
+      canvasId: entry.canvasId,
+      merchantUuid: entry.merchantUuid,
+      source: metadata.source,
+    });
+  }
+
+  private async updateCanvasCacheHit(lookup: string, type: CanvasLookupType): Promise<void> {
     canvasId: string,
     metadata: { source: string; canvasName?: string } = { source: 'notion' }
   ): Promise<void> {

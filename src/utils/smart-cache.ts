@@ -20,6 +20,11 @@ const CACHE_VERSION = 'v1';
 const CACHE_API_TTL = 3600; // 1 hour in seconds
 const KV_TTL = 86400; // 24 hours in seconds
 
+interface CachedCanvasData {
+  canvasId: string;
+  merchantUuid: string | null;
+}
+
 /**
  * Get Canvas ID with smart multi-tier caching
  */
@@ -38,10 +43,10 @@ export async function getCachedCanvas(
       logger.info('Canvas found in Cache API (edge)', {
         lookup,
         type,
-        canvasId: cacheApiResult,
+        canvasId: cacheApiResult.canvasId,
         durationMs: Date.now() - startTime,
       });
-      return cacheApiResult;
+      return cacheApiResult.canvasId;
     }
 
     // Tier 2: KV (region-level)
@@ -50,32 +55,32 @@ export async function getCachedCanvas(
       logger.info('Canvas found in KV (region)', {
         lookup,
         type,
-        canvasId: kvResult,
+        canvasId: kvResult.canvasId,
         durationMs: Date.now() - startTime,
       });
 
       // Promote to Cache API for faster future access
       await promoteToCacheAPI(lookup, type, kvResult);
 
-      return kvResult;
+      return kvResult.canvasId;
     }
 
     // Tier 3: Query Notion (slowest)
     const notionClient = new NotionClient(env, logger);
-    const canvasId = await queryNotion(lookup, type, notionClient);
+    const canvasResult = await queryNotion(lookup, type, notionClient);
 
-    if (canvasId) {
+    if (canvasResult) {
       logger.info('Canvas found via Notion query', {
         lookup,
         type,
-        canvasId,
+        canvasId: canvasResult.canvasId,
         durationMs: Date.now() - startTime,
       });
 
       // Store in both caches for future requests
       await Promise.all([
-        storeInKV(lookup, type, canvasId, env),
-        promoteToCacheAPI(lookup, type, canvasId),
+        storeInKV(lookup, type, canvasResult, env),
+        promoteToCacheAPI(lookup, type, canvasResult),
       ]);
     } else {
       logger.info('Canvas not found', {
@@ -85,7 +90,7 @@ export async function getCachedCanvas(
       });
     }
 
-    return canvasId;
+    return canvasResult?.canvasId ?? null;
   } catch (error) {
     logger.error('Error in smart cache lookup', {
       lookup,
@@ -129,7 +134,12 @@ export async function invalidateCache(
  * Useful for bulk operations or initial setup
  */
 export async function warmUpCache(
-  mappings: Array<{ lookup: string; type: 'phone' | 'email'; canvasId: string }>,
+  mappings: Array<{
+    lookup: string;
+    type: 'phone' | 'email';
+    canvasId: string;
+    merchantUuid?: string | null;
+  }>,
   env: Env,
   logger: Logger
 ): Promise<void> {
@@ -137,9 +147,13 @@ export async function warmUpCache(
 
   const promises = mappings.map(async (mapping) => {
     try {
+      const data: CachedCanvasData = {
+        canvasId: mapping.canvasId,
+        merchantUuid: mapping.merchantUuid ?? null,
+      };
       await Promise.all([
-        storeInKV(mapping.lookup, mapping.type, mapping.canvasId, env),
-        promoteToCacheAPI(mapping.lookup, mapping.type, mapping.canvasId),
+        storeInKV(mapping.lookup, mapping.type, data, env),
+        promoteToCacheAPI(mapping.lookup, mapping.type, data),
       ]);
     } catch (error) {
       logger.error('Error warming up cache entry', {
@@ -191,7 +205,7 @@ export async function getCacheStats(env: Env, logger: Logger): Promise<{
 /**
  * Check Cache API (Tier 1)
  */
-async function checkCacheAPI(lookup: string, type: 'phone' | 'email'): Promise<string | null> {
+async function checkCacheAPI(lookup: string, type: 'phone' | 'email'): Promise<CachedCanvasData | null> {
   try {
     const cache = caches.default;
     const cacheKey = buildCacheKey(lookup, type);
@@ -199,7 +213,8 @@ async function checkCacheAPI(lookup: string, type: 'phone' | 'email'): Promise<s
 
     const response = await cache.match(cacheRequest);
     if (response) {
-      return await response.text();
+      const text = await response.text();
+      return parseCachedCanvas(text);
     }
 
     return null;
@@ -212,10 +227,11 @@ async function checkCacheAPI(lookup: string, type: 'phone' | 'email'): Promise<s
 /**
  * Check KV (Tier 2)
  */
-async function checkKV(lookup: string, type: 'phone' | 'email', env: Env): Promise<string | null> {
+async function checkKV(lookup: string, type: 'phone' | 'email', env: Env): Promise<CachedCanvasData | null> {
   try {
     const kvKey = buildKVKey(lookup, type);
-    return await env.CACHE.get(kvKey);
+    const value = await env.CACHE.get(kvKey);
+    return parseCachedCanvas(value);
   } catch (error) {
     return null;
   }
@@ -228,18 +244,30 @@ async function queryNotion(
   lookup: string,
   type: 'phone' | 'email',
   notionClient: NotionClient
-): Promise<string | null> {
-  if (type === 'phone') {
-    return await notionClient.findCanvasByPhone(lookup);
-  } else {
-    return await notionClient.findCanvasByEmail(lookup);
+): Promise<CachedCanvasData | null> {
+  const canvasId = type === 'phone'
+    ? await notionClient.findCanvasByPhone(lookup)
+    : await notionClient.findCanvasByEmail(lookup);
+
+  if (!canvasId) {
+    return null;
   }
+
+  const merchantInfo = await notionClient.getCanvasMerchantInfo(canvasId);
+  return {
+    canvasId,
+    merchantUuid: merchantInfo.uuid ?? null,
+  };
 }
 
 /**
  * Promote to Cache API
  */
-async function promoteToCacheAPI(lookup: string, type: 'phone' | 'email', canvasId: string): Promise<void> {
+async function promoteToCacheAPI(
+  lookup: string,
+  type: 'phone' | 'email',
+  data: CachedCanvasData
+): Promise<void> {
   try {
     const cache = caches.default;
     const cacheKey = buildCacheKey(lookup, type);
@@ -247,13 +275,20 @@ async function promoteToCacheAPI(lookup: string, type: 'phone' | 'email', canvas
 
     await cache.put(
       cacheRequest,
-      new Response(canvasId, {
-        headers: {
-          'Cache-Control': `max-age=${CACHE_API_TTL}`,
-          'Content-Type': 'text/plain',
-          'X-Cache-Version': CACHE_VERSION,
-        },
-      })
+      new Response(
+        JSON.stringify({
+          canvasId: data.canvasId,
+          merchantUuid: data.merchantUuid,
+          cachedAt: new Date().toISOString(),
+        }),
+        {
+          headers: {
+            'Cache-Control': `max-age=${CACHE_API_TTL}`,
+            'Content-Type': 'text/plain',
+            'X-Cache-Version': CACHE_VERSION,
+          },
+        }
+      )
     );
   } catch (error) {
     // Non-critical error, log but don't throw
@@ -264,12 +299,25 @@ async function promoteToCacheAPI(lookup: string, type: 'phone' | 'email', canvas
 /**
  * Store in KV
  */
-async function storeInKV(lookup: string, type: 'phone' | 'email', canvasId: string, env: Env): Promise<void> {
+async function storeInKV(
+  lookup: string,
+  type: 'phone' | 'email',
+  data: CachedCanvasData,
+  env: Env
+): Promise<void> {
   try {
     const kvKey = buildKVKey(lookup, type);
-    await env.CACHE.put(kvKey, canvasId, {
-      expirationTtl: KV_TTL,
-    });
+    await env.CACHE.put(
+      kvKey,
+      JSON.stringify({
+        canvasId: data.canvasId,
+        merchantUuid: data.merchantUuid,
+        cachedAt: new Date().toISOString(),
+      }),
+      {
+        expirationTtl: KV_TTL,
+      }
+    );
   } catch (error) {
     // Non-critical error
     console.error('Error storing in KV:', error);
@@ -283,6 +331,30 @@ function buildCacheKey(lookup: string, type: 'phone' | 'email'): string {
   // Normalize phone numbers and emails
   const normalized = normalizeIdentifier(lookup, type);
   return `${CACHE_VERSION}/canvas/${type}/${normalized}`;
+}
+
+function parseCachedCanvas(value: string | null): CachedCanvasData | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === 'object' && parsed.canvasId) {
+      return {
+        canvasId: String(parsed.canvasId),
+        merchantUuid:
+          typeof parsed.merchantUuid === 'string' ? parsed.merchantUuid : parsed.merchantUuid ?? null,
+      };
+    }
+  } catch (error) {
+    // Fall back to legacy string format
+  }
+
+  return {
+    canvasId: value,
+    merchantUuid: null,
+  };
 }
 
 /**

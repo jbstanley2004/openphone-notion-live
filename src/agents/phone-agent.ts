@@ -31,6 +31,7 @@ interface PhoneAgentState {
   canvasCache: Record<string, string>;
   totalCallsSynced: number;
   totalMessagesSynced: number;
+  callsProcessed: number;
   callsProcessed?: number;
   insights: Array<{
     callId: string;
@@ -69,6 +70,7 @@ export class PhoneAgent {
       canvasCache: initialState?.canvasCache || {},
       totalCallsSynced: initialState?.totalCallsSynced || 0,
       totalMessagesSynced: initialState?.totalMessagesSynced || 0,
+      callsProcessed: initialState?.callsProcessed || 0,
       insights: initialState?.insights || [],
     };
   }
@@ -168,6 +170,7 @@ export class PhoneAgent {
       // Create or update Notion page with AI insights
       const existingPageId = await notionClient.callPageExists(call.id);
       let notionPageId: string;
+      let merchantUuid: string | null = null;
 
       const pageData = {
         ...completeData,
@@ -183,13 +186,26 @@ export class PhoneAgent {
       };
 
       if (existingPageId) {
-        await notionClient.updateCallPage(existingPageId, pageData);
+        const result = await notionClient.updateCallPage(existingPageId, pageData);
         notionPageId = existingPageId;
+        merchantUuid = result.merchantUuid;
       } else {
-        notionPageId = await notionClient.createCallPage(pageData);
+        const result = await notionClient.createCallPage(pageData);
+        notionPageId = result.pageId;
+        merchantUuid = result.merchantUuid;
       }
 
       // Index in Vectorize for semantic search
+      await indexCall(
+        call,
+        transcript,
+        aiAnalysis.summary,
+        notionPageId,
+        merchantUuid,
+        canvasId ?? null,
+        this.env,
+        this.logger
+      );
       await indexCall(call, transcript, aiAnalysis.summary, notionPageId, this.env, this.logger, {
         canvasId: merchantMetadata.canvasId ?? undefined,
         merchantUuid: merchantMetadata.merchantUuid ?? undefined,
@@ -229,6 +245,8 @@ export class PhoneAgent {
       this.logger.info('Call processed successfully with AI', {
         callId: call.id,
         notionPageId,
+        canvasId,
+        merchantUuid,
         canvasId: merchantMetadata.canvasId,
         sentiment: aiAnalysis.sentiment.label,
         leadScore: aiAnalysis.leadScore,

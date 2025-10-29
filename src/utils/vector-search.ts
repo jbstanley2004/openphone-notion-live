@@ -30,6 +30,15 @@ export interface VectorMetadata {
 export interface VectorSearchResult {
   id: string;
   score: number;
+  metadata: {
+    phoneNumber?: string;
+    timestamp: string;
+    notionPageId?: string;
+    type: 'call' | 'message';
+    direction?: string;
+    merchantUuid?: string | null;
+    canvasId?: string | null;
+  };
   metadata: VectorMetadata;
 }
 
@@ -55,6 +64,8 @@ export async function indexCall(
   transcript: string | undefined,
   summary: string | undefined,
   notionPageId: string,
+  merchantUuid: string | null,
+  canvasId: string | null,
   env: Env,
   logger: Logger,
   context: VectorMetadataContext = {}
@@ -98,6 +109,15 @@ export async function indexCall(
       {
         id: `call:${call.id}`,
         values: embeddings.data[0],
+        metadata: {
+          phoneNumber: call.participants[0] || '',
+          timestamp: call.createdAt,
+          notionPageId,
+          type: 'call',
+          direction: call.direction,
+          ...(merchantUuid ? { merchantUuid } : {}),
+          ...(canvasId ? { canvasId } : {}),
+        },
         metadata,
       },
     ]);
@@ -118,6 +138,8 @@ export async function indexMessage(
   message: Message,
   summary: string | undefined,
   notionPageId: string,
+  merchantUuid: string | null,
+  canvasId: string | null,
   env: Env,
   logger: Logger,
   context: VectorMetadataContext = {}
@@ -158,6 +180,15 @@ export async function indexMessage(
       {
         id: `message:${message.id}`,
         values: embeddings.data[0],
+        metadata: {
+          phoneNumber: message.from,
+          timestamp: message.createdAt,
+          notionPageId,
+          type: 'message',
+          direction: message.direction,
+          ...(merchantUuid ? { merchantUuid } : {}),
+          ...(canvasId ? { canvasId } : {}),
+        },
         metadata,
       },
     ]);

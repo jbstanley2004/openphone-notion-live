@@ -6,6 +6,8 @@
 import type { Env } from '../types/env';
 import { Logger } from '../utils/logger';
 import { runComprehensiveBackfill } from './comprehensive-backfill';
+import { NotionClient } from '../utils/notion-client';
+import { replicateCanvasCacheToKV } from './canvas-cache-replicator';
 import { replicateCanvasCacheToKV } from './canvas-cache-replicator';
 import { runAggregationJobs } from '../workflows/aggregation-jobs';
 import { runSystemHealthChecks } from './system-health';
@@ -23,6 +25,8 @@ export async function runScheduledTasks(env: Env, logger: Logger): Promise<void>
   logger.info('Starting scheduled comprehensive backfill');
 
   try {
+    await replicateCanvasCacheToKV(env, logger);
+
     const replication = await replicateCanvasCacheToKV(env, logger);
     logger.info('Canvas cache replication run before backfill', replication);
   } catch (error) {
@@ -48,6 +52,31 @@ export async function runScheduledTasks(env: Env, logger: Logger): Promise<void>
       totalFailed: stats.calls.failed + stats.messages.failed + stats.mail.failed + stats.canvas.failed,
       totalSkipped: stats.calls.skipped + stats.messages.skipped + stats.mail.skipped + stats.canvas.skipped,
     });
+
+    // Validate Merchant UUID coverage across databases
+    const notionClient = new NotionClient(env, logger);
+    const uuidSync = await notionClient.synchronizeMerchantUuids();
+
+    logger.info('Merchant UUID synchronization audit completed', {
+      updated: uuidSync.updated,
+      missing: uuidSync.missing.length,
+    });
+
+    for (const gap of uuidSync.missing) {
+      const queuedEvent = {
+        id: `uuid-gap-${gap.pageId}-${Date.now()}`,
+        type: 'maintenance.merchant_uuid_backfill',
+        timestamp: new Date().toISOString(),
+        data: gap,
+      };
+
+      await env.WEBHOOK_EVENTS.send(queuedEvent);
+      logger.warn('Queued merchant UUID correction', {
+        database: gap.database,
+        pageId: gap.pageId,
+        merchantName: gap.merchantName,
+      });
+    }
   } catch (error) {
     logger.error('Error in scheduled comprehensive backfill', error);
     throw error;

@@ -243,6 +243,7 @@ export type WebhookEventType =
   | 'call.summary.completed'
   | 'message.received'
   | 'message.delivered'
+  | 'maintenance.merchant_uuid_backfill';
   | 'mail.received'
   | 'mail.delivered'
   | 'mail.sent';

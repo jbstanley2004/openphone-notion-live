@@ -41,6 +41,71 @@ interface BackfillOptions {
   reindexLimit?: number; // Limit number of interactions to reindex
 }
 
+interface BackfillSyncRecord {
+  phoneNumberId: string | null;
+  resourceType: 'call' | 'message';
+  resourceId: string;
+  direction: string | null;
+  notionPageId: string | null;
+  canvasId: string | null;
+  merchantUuid: string | null;
+  status: 'success' | 'failed';
+  durationMs?: number;
+  errorMessage?: string;
+}
+
+async function recordBackfillHistory(
+  env: Env,
+  logger: Logger,
+  record: BackfillSyncRecord
+): Promise<void> {
+  if (!record.phoneNumberId) {
+    logger.warn('Skipping backfill sync history entry without phone number', {
+      resourceId: record.resourceId,
+      resourceType: record.resourceType,
+    });
+    return;
+  }
+
+  try {
+    await env.DB.prepare(
+      `INSERT INTO sync_history (
+        phone_number_id,
+        resource_type,
+        resource_id,
+        direction,
+        notion_page_id,
+        canvas_id,
+        merchant_uuid,
+        sync_status,
+        error_message,
+        processing_time_ms,
+        synced_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(
+        record.phoneNumberId,
+        record.resourceType,
+        record.resourceId,
+        record.direction,
+        record.notionPageId,
+        record.canvasId,
+        record.merchantUuid,
+        record.status,
+        record.errorMessage ?? null,
+        record.durationMs ?? null,
+        Date.now()
+      )
+      .run();
+  } catch (error) {
+    logger.error('Failed to record backfill sync history', {
+      resourceId: record.resourceId,
+      resourceType: record.resourceType,
+      error: String(error),
+    });
+  }
+}
+
 /**
  * Run comprehensive backfill of all databases
  */
@@ -253,6 +318,11 @@ async function backfillCallsDatabase(
 
           await Promise.allSettled(
             batch.map(async (call) => {
+              const callStart = Date.now();
+              let notionPageId: string | null = null;
+              let merchantUuid: string | null = null;
+              let canvasIdForLog: string | null = null;
+
               try {
                 // Check if already synced
                 const syncState = await getSyncState(env.SYNC_STATE, call.id);
@@ -272,7 +342,7 @@ async function backfillCallsDatabase(
                 const completeData = await openPhoneClient.getCompleteCall(call.id);
 
                 // Get transcript if available
-                const transcript = completeData.voicemail?.transcription;
+                const transcript = completeData.voicemail?.transcription ?? undefined;
 
                 // AI Analysis (if enabled)
                 let aiAnalysis = null;
@@ -339,13 +409,22 @@ async function backfillCallsDatabase(
                 };
 
                 const existingPageId = await notionClient.callPageExists(call.id);
-                let notionPageId: string;
+                canvasIdForLog = canvasId;
 
                 if (existingPageId) {
-                  await notionClient.updateCallPage(existingPageId, pageData);
+                  const result = await notionClient.updateCallPage(existingPageId, pageData);
                   notionPageId = existingPageId;
+                  merchantUuid = result.merchantUuid ?? null;
+                  canvasIdForLog = result.canvasId || canvasIdForLog;
                 } else {
-                  notionPageId = await notionClient.createCallPage(pageData);
+                  const result = await notionClient.createCallPage(pageData);
+                  notionPageId = result.pageId;
+                  merchantUuid = result.merchantUuid ?? null;
+                  canvasIdForLog = result.canvasId || canvasIdForLog;
+                }
+
+                if (!notionPageId) {
+                  throw new Error('Failed to determine Notion page ID for call backfill');
                 }
 
                 // Vectorize (if enabled)
@@ -362,6 +441,8 @@ async function backfillCallsDatabase(
                     transcript ?? undefined,
                     aiAnalysis?.summary,
                     notionPageId,
+                    merchantUuid,
+                    canvasIdForLog || null,
                     env,
                     logger,
                     {
@@ -373,11 +454,31 @@ async function backfillCallsDatabase(
                   logger.info('Call vectorized', { callId: call.id });
                 }
 
-                await markAsSynced(env.SYNC_STATE, call.id, 'call', notionPageId);
+                await markAsSynced(
+                  env.SYNC_STATE,
+                  call.id,
+                  'call',
+                  notionPageId,
+                  merchantUuid,
+                  canvasIdForLog || null
+                );
+
+                await recordBackfillHistory(env, logger, {
+                  phoneNumberId: call.phoneNumberId,
+                  resourceType: 'call',
+                  resourceId: call.id,
+                  direction: call.direction,
+                  notionPageId,
+                  canvasId: canvasIdForLog || null,
+                  merchantUuid,
+                  status: 'success',
+                  durationMs: Date.now() - callStart,
+                });
+
                 synced++;
                 logger.info('Call backfilled successfully', {
                   callId: call.id,
-                  canvasId,
+                  canvasId: canvasIdForLog,
                   aiEnabled: includeAI,
                   vectorized: includeVectorize,
                 });
@@ -396,8 +497,21 @@ async function backfillCallsDatabase(
                 }
               } catch (error) {
                 failed++;
+                const errorMessage = error instanceof Error ? error.message : String(error);
                 logger.error('Failed to backfill call', { callId: call.id, error });
                 await markAsFailed(env.SYNC_STATE, call.id, 'call', String(error), 1);
+                await recordBackfillHistory(env, logger, {
+                  phoneNumberId: call.phoneNumberId,
+                  resourceType: 'call',
+                  resourceId: call.id,
+                  direction: call.direction,
+                  notionPageId: null,
+                  canvasId: null,
+                  merchantUuid: null,
+                  status: 'failed',
+                  durationMs: Date.now() - callStart,
+                  errorMessage,
+                });
               }
             })
           );
@@ -487,6 +601,11 @@ async function backfillMessagesDatabase(
 
           await Promise.allSettled(
             batch.map(async (message) => {
+              const messageStart = Date.now();
+              let notionPageId: string | null = null;
+              let merchantUuid: string | null = null;
+              let canvasIdForLog: string | null = null;
+
               try {
                 const syncState = await getSyncState(env.SYNC_STATE, message.id);
                 if (syncState?.status === 'completed') {
@@ -522,13 +641,22 @@ async function backfillMessagesDatabase(
                 };
 
                 const existingPageId = await notionClient.messagePageExists(message.id);
-                let notionPageId: string;
+                canvasIdForLog = canvasId;
 
                 if (existingPageId) {
-                  await notionClient.updateMessagePage(existingPageId, pageData);
+                  const result = await notionClient.updateMessagePage(existingPageId, pageData);
                   notionPageId = existingPageId;
+                  merchantUuid = result.merchantUuid ?? null;
+                  canvasIdForLog = result.canvasId || canvasIdForLog;
                 } else {
-                  notionPageId = await notionClient.createMessagePage(pageData);
+                  const result = await notionClient.createMessagePage(pageData);
+                  notionPageId = result.pageId;
+                  merchantUuid = result.merchantUuid ?? null;
+                  canvasIdForLog = result.canvasId || canvasIdForLog;
+                }
+
+                if (!notionPageId) {
+                  throw new Error('Failed to determine Notion page ID for message backfill');
                 }
 
                 // Vectorize (if enabled)
@@ -544,6 +672,8 @@ async function backfillMessagesDatabase(
                     message,
                     aiAnalysis?.summary,
                     notionPageId,
+                    merchantUuid,
+                    canvasIdForLog || null,
                     env,
                     logger,
                     {
@@ -554,8 +684,33 @@ async function backfillMessagesDatabase(
                   );
                 }
 
-                await markAsSynced(env.SYNC_STATE, message.id, 'message', notionPageId);
+                await markAsSynced(
+                  env.SYNC_STATE,
+                  message.id,
+                  'message',
+                  notionPageId,
+                  merchantUuid,
+                  canvasIdForLog || null
+                );
+
+                await recordBackfillHistory(env, logger, {
+                  phoneNumberId: message.phoneNumberId,
+                  resourceType: 'message',
+                  resourceId: message.id,
+                  direction: message.direction,
+                  notionPageId,
+                  canvasId: canvasIdForLog || null,
+                  merchantUuid,
+                  status: 'success',
+                  durationMs: Date.now() - messageStart,
+                });
+
                 synced++;
+                logger.info('Message backfilled successfully', {
+                  messageId: message.id,
+                  canvasId: canvasIdForLog,
+                  vectorized: includeVectorize,
+                });
 
                 try {
                   await syncMessageToD1(message, env, notionClient, logger, {
@@ -569,8 +724,21 @@ async function backfillMessagesDatabase(
                 }
               } catch (error) {
                 failed++;
+                const errorMessage = error instanceof Error ? error.message : String(error);
                 logger.error('Failed to backfill message', { messageId: message.id, error });
                 await markAsFailed(env.SYNC_STATE, message.id, 'message', String(error), 1);
+                await recordBackfillHistory(env, logger, {
+                  phoneNumberId: message.phoneNumberId,
+                  resourceType: 'message',
+                  resourceId: message.id,
+                  direction: message.direction,
+                  notionPageId: null,
+                  canvasId: null,
+                  merchantUuid: null,
+                  status: 'failed',
+                  durationMs: Date.now() - messageStart,
+                  errorMessage,
+                });
               }
             })
           );
